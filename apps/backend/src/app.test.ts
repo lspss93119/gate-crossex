@@ -1571,13 +1571,13 @@ describe('local backend', () => {
     expect(body.assets.find((entry) => entry.asset === 'ZETA')?.venues[0]).toMatchObject({
       venue: 'GATE', fundingRate: null, lastPrice: null, change24h: null,
     });
-    expect(body.venueStatus).toHaveLength(7);
+    expect(body.venueStatus).toHaveLength(8);
     expect(body.venueStatus.every((status) => status.status === 'ok')).toBe(true);
-    expect(publicMarketGateway.fundingStatsQueryCount).toBe(7);
+    expect(publicMarketGateway.fundingStatsQueryCount).toBe(8);
 
     // A second request inside the freshness window reuses the sweep.
     expect((await app.inject({ method: 'GET', url: '/api/markets/funding-overview', headers })).statusCode).toBe(200);
-    expect(publicMarketGateway.fundingStatsQueryCount).toBe(7);
+    expect(publicMarketGateway.fundingStatsQueryCount).toBe(8);
   });
 
   it('still answers the funding overview when every venue fetch fails', async () => {

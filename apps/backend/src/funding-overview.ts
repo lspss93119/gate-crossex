@@ -1,6 +1,7 @@
 import { FUNDING_STAT_VENUES, PublicMarketDataError } from '@gate-crossex/public-data';
 import type { FundingStatVenue, PublicMarketDataGateway, VenueFundingStat } from '@gate-crossex/public-data';
 import type { FundingOverviewResponse, FundingOverviewVenueEntry, MarketCatalogVenue } from '@gate-crossex/shared-types';
+import { EXTERNAL_VENUES, canonicalMarketAsset } from '@gate-crossex/shared-types';
 
 interface VenueCacheEntry {
   rows: Map<string, VenueFundingStat>;
@@ -115,7 +116,18 @@ export class FundingOverviewService {
   }
 
   buildResponse(catalog: FundingOverviewCatalogView): FundingOverviewResponse {
-    const assets = [...catalog.assets.entries()].map(([asset, venueList]) => ({
+    // Funding-only union. Never register native markets with the CrossEx trading catalog/hub.
+    const fundingAssets = new Map([...catalog.assets].map(([asset, venues]) => [asset, [...venues]]));
+    for (const venue of EXTERNAL_VENUES) {
+      for (const stat of this.venues.get(venue)?.rows.values() ?? []) {
+        const asset = canonicalMarketAsset(venue, 'FUTURE', stat.base);
+        const venues = fundingAssets.get(asset) ?? [];
+        const symbol = `${venue}_FUTURE_${stat.base}_${stat.quote}`;
+        if (!venues.some((entry) => entry.symbol === symbol)) venues.push({ venue, symbol, quote: stat.quote });
+        fundingAssets.set(asset, venues);
+      }
+    }
+    const assets = [...fundingAssets.entries()].map(([asset, venueList]) => ({
       asset,
       venues: venueList.map((entry): FundingOverviewVenueEntry => {
         const cached = this.venues.get(entry.venue as FundingStatVenue);

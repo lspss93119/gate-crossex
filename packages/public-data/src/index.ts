@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Candle, CandleInterval, PublicMarketSnapshot } from '@gate-crossex/shared-types';
-import { CROSSEX_VENUES } from '@gate-crossex/shared-types';
+import { SUPPORTED_VENUES, isSupportedVenue } from '@gate-crossex/shared-types';
+import { Decimal } from 'decimal.js';
 
 const BinanceBookSchema = z.object({
   bidPrice: z.string(),
@@ -52,6 +53,23 @@ const OkxInstrumentListSchema = okxEnvelope(z.object({
 // --- Bulk funding/OI rows. Envelopes parse strictly; rows parse one at a time so a single
 // malformed listing cannot take down a whole venue.
 const numeric = z.union([z.string(), z.number()]);
+const LighterMarketSchema = z.object({
+  symbol: z.string(), market_id: z.number().int().nonnegative(), market_type: z.string(), status: z.string(),
+  supported_size_decimals: z.number().int().nonnegative(), supported_price_decimals: z.number().int().nonnegative(),
+  mark_price: numeric.nullish(), index_price: numeric.nullish(), last_trade_price: numeric.nullish(),
+  open_interest: numeric.nullish(), daily_price_change: numeric.nullish(),
+});
+const LighterMetadataSchema = z.object({ code: z.literal(200), order_book_details: z.array(LighterMarketSchema).max(10_000) });
+const LighterRatesSchema = z.object({ code: z.literal(200), funding_rates: z.array(z.object({
+  market_id: z.number().int().nonnegative(), exchange: z.string(), symbol: z.string(), rate: z.number().finite(),
+})).max(40_000) });
+const LighterHistorySchema = z.object({ code: z.literal(200), resolution: z.literal('1h'), fundings: z.array(z.object({
+  timestamp: z.number().int().nonnegative().safe(), value: z.string(),
+  rate: z.string().regex(/^\d+(?:\.\d+)?$/), direction: z.enum(['long', 'short']),
+})).max(750) });
+const LIGHTER_HOUR_MS = 3_600_000;
+const LIGHTER_HISTORY_PAGE_MS = 500 * LIGHTER_HOUR_MS;
+const LIGHTER_REQUEST_SPACING_MS = 1_500;
 const GateFundingRowSchema = z.object({
   contract: z.string(), funding_rate: numeric, mark_price: numeric,
   last: numeric.optional(), change_percentage: numeric.optional(),
@@ -217,13 +235,13 @@ export function isRetryablePublicMarketDataError(error: unknown): error is Publi
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-function retryAfterMilliseconds(value: string | null): number | null {
+function retryAfterMilliseconds(value: string | null, maximumMs = MAX_RETRY_AFTER_MS): number | null {
   if (!value) return null;
   const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, maximumMs);
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp)
-    ? Math.min(Math.max(0, timestamp - Date.now()), MAX_RETRY_AFTER_MS)
+    ? Math.min(Math.max(0, timestamp - Date.now()), maximumMs)
     : null;
 }
 
@@ -250,7 +268,7 @@ export interface VenueContractSize {
   multiplier: string;
 }
 
-export const FUNDING_STAT_VENUES = CROSSEX_VENUES;
+export const FUNDING_STAT_VENUES = SUPPORTED_VENUES;
 export type FundingStatVenue = typeof FUNDING_STAT_VENUES[number];
 
 /**
@@ -377,9 +395,9 @@ interface ParsedSymbol {
 }
 
 function parseCrossExFutureSymbol(symbol: string): ParsedSymbol {
-  const match = /^(BINANCE|GATE|OKX|BYBIT|KRAKEN|HYPERLIQUID|DERIBIT)_FUTURE_(.+)_([A-Z0-9]+)$/.exec(symbol);
-  if (!match?.[1] || !match[2] || !match[3]) throw new PublicMarketDataError('UNSUPPORTED_SYMBOL');
-  return { venue: match[1] as ParsedSymbol['venue'], base: match[2], quote: match[3] };
+  const match = /^([A-Z]+)_FUTURE_(.+)_([A-Z0-9]+)$/.exec(symbol);
+  if (!match?.[1] || !isSupportedVenue(match[1]) || !match[2] || !match[3]) throw new PublicMarketDataError('UNSUPPORTED_SYMBOL');
+  return { venue: match[1], base: match[2], quote: match[3] };
 }
 
 function candlesFromDeribitArrays(payload: z.infer<typeof DeribitCandleSchema>): Candle[] {
@@ -430,6 +448,7 @@ async function fetchJson(
   maximumBytes = 1_000_000,
   post?: { body: string },
   signal?: AbortSignal,
+  retryAfterLimitMs = MAX_RETRY_AFTER_MS,
 ): Promise<unknown> {
   let response: Response;
   try {
@@ -483,7 +502,7 @@ async function fetchJson(
   if (!response.ok) {
     throw new PublicMarketDataError(
       `UPSTREAM_HTTP_${response.status}`,
-      retryAfterMilliseconds(response.headers.get('retry-after')),
+      retryAfterMilliseconds(response.headers.get('retry-after'), retryAfterLimitMs),
     );
   }
   try {
@@ -508,6 +527,9 @@ async function optionalPayload<T>(request: Promise<unknown>, schema: z.ZodType<T
 }
 
 export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
+  private lighterRequestTail: Promise<void> = Promise.resolve();
+  private lighterNextRequestAt = Number.NEGATIVE_INFINITY;
+  private lighterMetadata: { rows: z.infer<typeof LighterMarketSchema>[]; fetchedAt: number } | null = null;
   private readonly hyperliquidMetadataStore: HyperliquidPerpMetadataStore | undefined;
   private readonly hyperliquidMetadataFreshMs: number;
   private readonly hyperliquidForcedRefreshMinMs: number;
@@ -607,6 +629,7 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
 
   async querySnapshot(crossExSymbol: string): Promise<PublicMarketSnapshot> {
     const symbol = parseCrossExFutureSymbol(crossExSymbol);
+    if (symbol.venue === 'LIGHTER') return this.queryLighterSnapshot(crossExSymbol, symbol);
     if (symbol.venue === 'BINANCE') return this.queryBinance(crossExSymbol, symbol);
     if (symbol.venue === 'GATE') return this.queryGate(crossExSymbol, symbol);
     if (symbol.venue === 'OKX') return this.queryOkx(crossExSymbol, symbol);
@@ -625,6 +648,7 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
       case 'KRAKEN': candles = await this.queryKrakenCandles(symbol, interval, boundedLimit, before); break;
       case 'HYPERLIQUID': candles = await this.queryHyperliquidCandles(symbol, interval, boundedLimit, before); break;
       case 'DERIBIT': candles = await this.queryDeribitCandles(symbol, interval, boundedLimit, before); break;
+      default: throw new PublicMarketDataError('UNSUPPORTED_SYMBOL');
     }
     const now = this.now();
     return candles
@@ -817,6 +841,7 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
   }
 
   async queryVenueFundingStats(venue: FundingStatVenue): Promise<VenueFundingStat[]> {
+    if (venue === 'LIGHTER') return this.queryLighterFundingStats();
     if (venue === 'GATE') return this.queryGateFundingStats();
     if (venue === 'BINANCE') return this.queryBinanceFundingStats();
     if (venue === 'OKX') return this.queryOkxFundingStats();
@@ -840,10 +865,126 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
       case 'KRAKEN': points = await this.queryKrakenFundingHistory(symbol, startTime, endTime, signal); break;
       case 'HYPERLIQUID': points = await this.queryHyperliquidFundingHistory(symbol, startTime, endTime, signal); break;
       case 'DERIBIT': points = await this.queryDeribitFundingHistory(symbol, startTime, endTime, signal); break;
+      case 'LIGHTER': points = await this.queryLighterFundingHistory(symbol, startTime, endTime, signal); break;
     }
     return points
       .filter((point) => point.timestamp > startTime && point.timestamp <= endTime && Number.isFinite(Number(point.rate)))
       .sort((left, right) => left.timestamp - right.timestamp);
+  }
+
+  /** One public REST queue per client, shared by metadata, funding and backfill. */
+  private fetchLighter(endpoint: string, signal?: AbortSignal): Promise<unknown> {
+    const run = this.lighterRequestTail.then(async () => {
+      for (let attempt = 0; ; attempt += 1) {
+        if (signal?.aborted) throw new PublicMarketDataError('ABORTED');
+        const wait = this.lighterNextRequestAt - this.now();
+        if (wait > 0) await this.sleep(wait, signal);
+        if (signal?.aborted) throw new PublicMarketDataError('ABORTED');
+        this.lighterNextRequestAt = this.now() + LIGHTER_REQUEST_SPACING_MS;
+        try {
+          return await fetchJson(this.fetchImplementation,
+            `https://mainnet.zklighter.elliot.ai/api/v1/${endpoint}`, 8_000_000, undefined, signal, Infinity);
+        } catch (error) {
+          if (signal?.aborted) throw new PublicMarketDataError('ABORTED');
+          if (error instanceof PublicMarketDataError && error.code === 'UPSTREAM_HTTP_429') {
+            // Firewall cooldown is 60s. Preserve a longer Retry-After, and let the existing
+            // service failure cache report the failure instead of blocking this request on a retry.
+            this.lighterNextRequestAt = this.now() + Math.max(60_000, error.retryAfterMs ?? 0);
+            throw error;
+          }
+          const delay = [1_000, 3_000][attempt];
+          if (delay === undefined || !isRetryablePublicMarketDataError(error)) throw error;
+          this.lighterNextRequestAt = this.now() + Math.max(LIGHTER_REQUEST_SPACING_MS, delay, error.retryAfterMs ?? 0);
+        }
+      }
+    });
+    this.lighterRequestTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async loadLighterMetadata(signal?: AbortSignal): Promise<z.infer<typeof LighterMarketSchema>[]> {
+    if (signal?.aborted) throw new PublicMarketDataError('ABORTED');
+    if (this.lighterMetadata && this.now() - this.lighterMetadata.fetchedAt < 30_000) return this.lighterMetadata.rows;
+    const payload = parsePayload(LighterMetadataSchema, await this.fetchLighter('orderBookDetails', signal));
+    const rows = payload.order_book_details.filter((row) => row.market_type === 'perp'
+      && row.status === 'active' && /^[A-Z0-9]+$/.test(row.symbol));
+    if (new Set(rows.map((row) => row.symbol)).size !== rows.length
+      || new Set(rows.map((row) => row.market_id)).size !== rows.length) {
+      throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
+    }
+    this.lighterMetadata = { rows, fetchedAt: this.now() };
+    return rows;
+  }
+
+  private async lighterMarket(symbol: ParsedSymbol, signal?: AbortSignal): Promise<z.infer<typeof LighterMarketSchema>> {
+    if (symbol.quote !== 'USDC') throw new PublicMarketDataError('UNSUPPORTED_SETTLEMENT');
+    const market = (await this.loadLighterMetadata(signal)).find((row) => row.symbol === symbol.base);
+    if (!market) throw new PublicMarketDataError('UNSUPPORTED_SYMBOL');
+    return market;
+  }
+
+  private async queryLighterFundingStats(): Promise<VenueFundingStat[]> {
+    const markets = await this.loadLighterMetadata();
+    const payload = parsePayload(LighterRatesSchema, await this.fetchLighter('funding-rates'));
+    const rates = new Map(payload.funding_rates.filter((row) => row.exchange === 'lighter')
+      .map((row) => [`${row.market_id}:${row.symbol}`, row.rate]));
+    // Official REST rates are already 8h-equivalent fractions. Payments settle hourly.
+    const nextFundingAt = new Date((Math.floor(this.now() / LIGHTER_HOUR_MS) + 1) * LIGHTER_HOUR_MS).toISOString();
+    return markets.map((market) => {
+      const rate8h = rates.get(`${market.market_id}:${market.symbol}`);
+      const hourly = rate8h === undefined ? null : new Decimal(rate8h).div(8).toString();
+      return {
+        venue: 'LIGHTER', base: market.symbol, quote: 'USDC', fundingRate: hourly,
+        fundingIntervalHours: 1, fundingRate8h: hourly === null ? null : rateScaledTo8h(Number(hourly), 1),
+        nextFundingAt, lastPrice: positiveNumberText(market.last_trade_price) ?? positiveNumberText(market.mark_price),
+        openInterestValue: positiveProduct(finiteNumber(market.open_interest), finiteNumber(market.mark_price)),
+        change24h: fractionFromPercent(market.daily_price_change),
+      };
+    });
+  }
+
+  private async queryLighterSnapshot(terminalSymbol: string, symbol: ParsedSymbol): Promise<PublicMarketSnapshot> {
+    const market = await this.lighterMarket(symbol);
+    const stat = (await this.queryLighterFundingStats()).find((row) => row.base === symbol.base);
+    const markPrice = positiveNumberText(market.mark_price);
+    const indexPrice = positiveNumberText(market.index_price);
+    if (!stat || stat.fundingRate === null || stat.nextFundingAt === null || markPrice === null || indexPrice === null) {
+      throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
+    }
+    const fetchedAt = new Date(this.now()).toISOString();
+    return { symbol: terminalSymbol, venue: 'LIGHTER', product: 'FUTURE', bidPrice: null, askPrice: null,
+      lastPrice: stat.lastPrice, markPrice, indexPrice, fundingRate: stat.fundingRate, predictedFundingRate: null,
+      nextFundingAt: stat.nextFundingAt, sourceTimestamp: fetchedAt, fetchedAt, source: 'lighter_public_rest' };
+  }
+
+  private async queryLighterFundingHistory(symbol: ParsedSymbol, startTime: number, endTime: number, signal?: AbortSignal): Promise<FundingRatePoint[]> {
+    if (signal?.aborted) throw new PublicMarketDataError('ABORTED');
+    // Bound the work before any request; the product asks for at most 30 days, DB retains 90.
+    if (endTime - startTime > 90 * 24 * LIGHTER_HOUR_MS || startTime < 0) throw new PublicMarketDataError('INVALID_TIME_RANGE');
+    const market = await this.lighterMarket(symbol, signal);
+    const points = new Map<number, string>();
+    for (let cursor = startTime; cursor < endTime; cursor += LIGHTER_HISTORY_PAGE_MS) {
+      const pageEnd = Math.min(endTime, cursor + LIGHTER_HISTORY_PAGE_MS);
+      const query = new URLSearchParams({ market_id: String(market.market_id), resolution: '1h',
+        start_timestamp: String(Math.floor(cursor / 1_000)),
+        // The upstream end is exclusive; our gateway's end is inclusive.
+        end_timestamp: String(Math.floor(pageEnd / 1_000) + 1), count_back: '0' });
+      const payload = parsePayload(LighterHistorySchema, await this.fetchLighter(`fundings?${query}`, signal));
+      if (payload.fundings.length >= 750) throw new PublicMarketDataError('INCOMPLETE_HISTORY');
+      for (const row of payload.fundings) {
+        const timestamp = row.timestamp * 1_000;
+        if (!Number.isSafeInteger(timestamp)) throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
+        if (timestamp <= cursor || timestamp > pageEnd) continue;
+        // History publishes a percent magnitude and the paying side. Preserve the signed
+        // fractional settlement with decimal arithmetic, never substitute funding value/USD.
+        const rate = new Decimal(row.rate).div(100).mul(row.direction === 'short' ? -1 : 1);
+        if (!rate.isFinite()) throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
+        const text = rate.toString();
+        if (points.has(timestamp) && points.get(timestamp) !== text) throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
+        points.set(timestamp, text);
+      }
+    }
+    return [...points].sort(([a], [b]) => a - b).map(([timestamp, rate]) => ({ timestamp, rate }));
   }
 
   private async queryGateFundingHistory(symbol: ParsedSymbol, startTime: number, endTime: number, signal?: AbortSignal): Promise<FundingRatePoint[]> {

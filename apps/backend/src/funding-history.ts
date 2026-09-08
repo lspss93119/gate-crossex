@@ -127,6 +127,7 @@ export class FundingHistoryService {
       KRAKEN: 125,
       HYPERLIQUID: 6_000,
       DERIBIT: 125,
+      LIGHTER: 1_500,
       ...options.venueSpacingMs,
     };
     this.warn = options.warn ?? (() => undefined);

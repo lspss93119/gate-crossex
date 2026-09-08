@@ -360,7 +360,7 @@ export type CrossExPortfolioActivityResponse = z.infer<typeof CrossExPortfolioAc
 
 export const PublicMarketSnapshotSchema = z.object({
   symbol: z.string(),
-  venue: z.enum(['BINANCE', 'GATE', 'OKX']),
+  venue: z.enum(['BINANCE', 'GATE', 'OKX', 'LIGHTER']),
   product: z.literal('FUTURE'),
   bidPrice: z.string().nullable(),
   askPrice: z.string().nullable(),
@@ -376,6 +376,7 @@ export const PublicMarketSnapshotSchema = z.object({
     'binance_futures_public_rest',
     'gate_futures_public_rest',
     'okx_public_rest',
+    'lighter_public_rest',
   ]),
 });
 export type PublicMarketSnapshot = z.infer<typeof PublicMarketSnapshotSchema>;

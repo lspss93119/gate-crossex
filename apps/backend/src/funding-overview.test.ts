@@ -25,6 +25,33 @@ const gateBtcStat: VenueFundingStat = {
 };
 
 describe('funding overview service', () => {
+  it('adds only native listings to Funding without changing the CrossEx catalog and isolates Lighter failures', async () => {
+    let failed = false;
+    let clock = 0;
+    const service = new FundingOverviewService(gatewayReturning((venue) => {
+      if (venue === 'GATE') return [gateBtcStat];
+      if (venue !== 'LIGHTER') return [];
+      if (failed) throw new PublicMarketDataError('NETWORK_ERROR');
+      return [{ ...gateBtcStat, venue: 'LIGHTER', quote: 'USDC', fundingIntervalHours: 1 }];
+    }), { now: () => clock, freshMs: 1 });
+    const catalog = { assets: new Map([
+      ['BTC', [{ venue: 'GATE', symbol: 'GATE_FUTURE_BTC_USDT', quote: 'USDT' }]],
+      ['NOTLISTED', [{ venue: 'GATE', symbol: 'GATE_FUTURE_NOTLISTED_USDT', quote: 'USDT' }]],
+    ]) };
+    await service.ensureFresh();
+    const response = service.buildResponse(catalog);
+    expect(response.assets[0]?.venues.map((row) => row.venue)).toEqual(['GATE', 'LIGHTER']);
+    expect(response.assets[0]?.venues[1]?.symbol).toBe('LIGHTER_FUTURE_BTC_USDC');
+    expect(response.assets[1]?.venues).toHaveLength(1);
+    expect(catalog.assets.get('BTC')).toHaveLength(1);
+    failed = true; clock = 100;
+    await service.ensureFresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const stale = service.buildResponse(catalog);
+    expect(stale.assets[0]?.venues[1]?.fundingRate).toBe('0.00005');
+    expect(stale.venueStatus.find((row) => row.venue === 'LIGHTER')?.status).toBe('error');
+    expect(stale.venueStatus.find((row) => row.venue === 'GATE')?.status).toBe('ok');
+  });
   it('refreshes every five minutes normally and every 30 seconds around the hourly settlement', () => {
     const at = (value: string) => Date.parse(`2026-08-01T12:${value}Z`);
     expect(fundingOverviewRefreshInterval(at('54:59.999'))).toBe(5 * 60_000);
