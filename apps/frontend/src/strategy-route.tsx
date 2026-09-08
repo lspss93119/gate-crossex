@@ -32,7 +32,7 @@ import {
   ADR_ASSET,
   ADR_HEDGE_ASSET,
   DEFAULT_ADR_RATIO,
-  FUNDING_VENUE_COLORS,
+  fundingVenueColor,
   PAIR_HISTORY_RANGES,
   assessMarginCapacity,
   balanceFor,
@@ -580,7 +580,7 @@ export function StrategyView({ mode, prefill, marketSnapshot, catalog, fees, str
         series: {
           id: `${symbol}:${positionFundingRangeLabel}`,
           label: venue.name,
-          color: FUNDING_VENUE_COLORS[venue.id.toUpperCase()] ?? '#8aa9ff',
+          color: fundingVenueColor(venue.id),
           points,
         },
       }];

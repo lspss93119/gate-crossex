@@ -21,12 +21,12 @@ import {
   fundingHistoryRequestKey,
 } from './funding-rates.js';
 import {
-  FUNDING_VENUE_COLORS,
   SEED_ASSETS,
   VenueIcon,
   assetIcon,
   assetName,
   fundingExchanges,
+  fundingVenueColor,
   fundingVenueName,
   isExecutableFundingVenue,
   type PairedPositionPrefill,
@@ -249,7 +249,7 @@ export function FundingDetailView({ asset, onBack, fundingOverview, onFundingOve
     return [{
       id: venue.symbol,
       label: fundingVenueName(venue.venue),
-      color: FUNDING_VENUE_COLORS[venue.venue] ?? '#8aa9ff',
+      color: fundingVenueColor(venue.venue),
       points,
     }];
   }), [mode, rangeFrom, seriesBySymbol, venues]);
@@ -264,7 +264,7 @@ export function FundingDetailView({ asset, onBack, fundingOverview, onFundingOve
       symbol: venue.symbol,
       venue: venue.venue,
       name: fundingVenueName(venue.venue),
-      color: FUNDING_VENUE_COLORS[venue.venue] ?? '#8aa9ff',
+      color: fundingVenueColor(venue.venue),
       mean: cumulative / rates.length,
       min: Math.min(...rates),
       max: Math.max(...rates),
@@ -713,7 +713,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
     <section className="funding-card terminal-panel">
       <div className="exchange-filter" role="group" aria-label="Filter exchanges">
         <span>{t('Exchanges')}</span>
-        {fundingExchanges.map((venue) => <button key={venue.id} className={selectedExchanges.includes(venue.id) ? 'selected' : ''} aria-pressed={selectedExchanges.includes(venue.id)} onClick={() => toggleExchange(venue.id)}><VenueIcon id={venue.id} short={venue.short} />{venue.name}<em>{selectedExchanges.includes(venue.id) ? '✓' : '+'}</em></button>)}
+        {fundingExchanges.map((venue) => <button key={venue.id} className={selectedExchanges.includes(venue.id) ? 'selected' : ''} aria-pressed={selectedExchanges.includes(venue.id)} onClick={() => toggleExchange(venue.id)}><VenueIcon id={venue.id} short={venue.short} fundingOnly />{venue.name}<em>{selectedExchanges.includes(venue.id) ? '✓' : '+'}</em></button>)}
         <small>{selectedExchanges.length} {t('selected')} · {t('at least one required')}</small>
       </div>
       <div className="oi-filter" role="group" aria-label="Minimum average open interest">
@@ -740,7 +740,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
             <th><button className="sort-header" onClick={() => changeSort('oi')}>{t('Open interest')} {sortMark('oi')}</button></th>
             <th><button className="sort-header" onClick={() => changeSort('average')}><span><strong>{t('Average rate')}</strong><small>{metric === 'Per interval' ? t('8h equivalent') : t('Tradable venues')}</small></span>{sortMark('average')}</button></th>
             <th><button className="sort-header arb-sort" onClick={() => changeSort('arb')}><span><strong>{t('Max arb')}</strong><small>{metric === 'Per interval' ? t('8h equivalent spread') : t('Best spread')}</small></span>{sortMark('arb')}</button></th>
-            {visibleExchanges.map(({ venue }) => <th key={venue.id}><button className="sort-header exchange-sort" onClick={() => changeSort(venue.id as FundingSortKey)}><span className="exchange-heading"><VenueIcon id={venue.id} short={venue.short} /><span><strong>{venue.name}</strong>{sortMark(venue.id as FundingSortKey)}</span></span></button></th>)}
+            {visibleExchanges.map(({ venue }) => <th key={venue.id}><button className="sort-header exchange-sort" onClick={() => changeSort(venue.id as FundingSortKey)}><span className="exchange-heading"><VenueIcon id={venue.id} short={venue.short} fundingOnly /><span><strong>{venue.name}</strong>{sortMark(venue.id as FundingSortKey)}</span></span></button></th>)}
           </tr></thead>
           <tbody>{visibleMarkets.map((item, index) => {
             const arb = getArb(item);

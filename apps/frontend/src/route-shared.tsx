@@ -3,7 +3,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { CrossExRiskLimitTier } from '@gate-crossex/shared-types';
 import type { AuthenticatedPortfolioSnapshot, CandleInterval, CrossExInstrument, LiveBalance, LiveMarket, MarketSnapshot, StrategyConfig } from './api.js';
-import { exchangeLogoFor, type ExchangeLogoId } from './exchange-logos.js';
+import { exchangeLogoFor, fundingVenueLogoFor, type ExchangeLogoId } from './exchange-logos.js';
 import { compactPrice } from './number-format.js';
 
 export type Side = 'Buy' | 'Sell';
@@ -129,8 +129,12 @@ export const FUNDING_VENUE_COLORS: Record<string, string> = {
   KRAKEN: '#8d74f5',
   HYPERLIQUID: '#35c9bc',
   DERIBIT: '#54a7d8',
-  LIGHTER: '#b9c5d1',
+  LIGHTER: '#f078a8',
 };
+
+export function fundingVenueColor(venue: string): string {
+  return FUNDING_VENUE_COLORS[venue.toUpperCase()] ?? '#8aa9ff';
+}
 
 export function fundingVenueName(venue: string): string {
   return fundingExchanges.find((entry) => entry.id === venue.toLowerCase())?.name ?? venue;
@@ -419,9 +423,9 @@ export function ticketIssues({ orderType, price, amount, referencePrice, quote, 
   return issues;
 }
 
-export function VenueIcon({ id, short }: { id: string; short: string }) {
+export function VenueIcon({ id, short, fundingOnly = false }: { id: string; short: string; fundingOnly?: boolean }) {
   const normalizedId = id.toLowerCase();
-  const logo = exchangeLogoFor(normalizedId);
+  const logo = fundingOnly ? fundingVenueLogoFor(normalizedId) : exchangeLogoFor(normalizedId);
   return <i className={`venue-icon venue-${normalizedId}`} aria-hidden="true">
     {logo ? <img src={logo} alt="" /> : short}
   </i>;
