@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { z } from 'zod';
 import {
+  CrossExVenueSchema,
   CrossExTransferAccountSchema,
   CrossExTransferRequestSchema,
   type CrossExTransferRequest,
@@ -26,9 +27,7 @@ const SPOT_ACCOUNTS_ENDPOINT = '/spot/accounts';
 const ADL_ENRICHMENT_BUDGET_MS = 1_500;
 const ADL_ENRICHMENT_REQUEST_TIMEOUT_MS = 1_000;
 const MAX_ADL_ENRICHMENT_SYMBOLS = 20;
-const IsolatedExchangeTypeSchema = z.enum([
-  'BINANCE', 'OKX', 'GATE', 'BYBIT', 'KRAKEN', 'HYPERLIQUID', 'DERIBIT',
-]);
+const IsolatedExchangeTypeSchema = CrossExVenueSchema;
 
 // Gate API Broker attribution for orders placed through this terminal. Gate requires
 // lowercase letters/digits, under 20 chars. Do not send this order-specific header on

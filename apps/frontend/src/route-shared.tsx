@@ -117,9 +117,11 @@ export const FUNDING_VENUE_COLORS: Record<string, string> = {
   KRAKEN: '#8d74f5',
   HYPERLIQUID: '#35c9bc',
   DERIBIT: '#54a7d8',
+  LIGHTER: '#b9c5d1',
 };
 
 export function fundingVenueName(venue: string): string {
+  if (venue.toUpperCase() === 'LIGHTER') return 'Lighter';
   return exchanges.find((entry) => entry.id === venue.toLowerCase())?.name ?? venue;
 }
 

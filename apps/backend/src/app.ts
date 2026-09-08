@@ -14,6 +14,8 @@ import { z } from 'zod';
 import { PublicMarketDataError, type PublicMarketDataGateway } from '@gate-crossex/public-data';
 import { reconcilePortfolioSnapshots, stalePortfolioReconciliation } from '@gate-crossex/domain';
 import {
+  CROSSEX_VENUES,
+  SupportedFutureSymbolSchema,
   BorosUpstreamMarketFeesResponseSchema,
   BorosUpstreamStrategiesResponseSchema,
   CrossExTransferAccountSchema,
@@ -119,20 +121,20 @@ const BOROS_STRATEGIES_URL = 'https://api-boros.pendle.finance/apis/v1/strategie
 const BOROS_MARKETS_URL = 'https://api-boros.pendle.finance/apis/v1/markets/by-ids';
 const BOROS_STRATEGIES_CACHE_MS = 30_000;
 
-const CATALOG_VENUES = ['GATE', 'BINANCE', 'OKX', 'BYBIT', 'KRAKEN', 'HYPERLIQUID', 'DERIBIT'] as const;
+const CATALOG_VENUES = CROSSEX_VENUES;
 const QUOTE_PREFERENCE = ['USDT', 'USDC', 'USD'] as const;
 const CROSSEX_FUTURE_SYMBOL = /^(GATE|BINANCE|OKX|BYBIT|KRAKEN|HYPERLIQUID|DERIBIT)_FUTURE_([A-Z0-9]+)_(USDT|USDC|USD)$/;
 const STRATEGY_ID = /^(AUTO|PAIR|PREM|CLOSE)-[A-Z0-9]{8}$/;
 const FundingHistoryRequestSchema = z.object({
-  symbols: z.array(z.string().regex(CROSSEX_FUTURE_SYMBOL)).min(1).max(50),
+  symbols: z.array(SupportedFutureSymbolSchema).min(1).max(50),
   durationDays: z.union([z.literal(1), z.literal(7), z.literal(30)]).default(30),
 });
 const FundingRankingRequestSchema = z.object({
-  symbols: z.array(z.string().regex(CROSSEX_FUTURE_SYMBOL)).min(1).max(5_000),
+  symbols: z.array(SupportedFutureSymbolSchema).min(1).max(5_000),
   durationDays: z.union([z.literal(1), z.literal(7), z.literal(30)]),
 });
 const FundingHistorySeriesRequestSchema = z.object({
-  symbols: z.array(z.string().regex(CROSSEX_FUTURE_SYMBOL)).min(1).max(7),
+  symbols: z.array(SupportedFutureSymbolSchema).min(1).max(8),
   durationDays: z.union([z.literal(1), z.literal(7), z.literal(30)]),
 });
 

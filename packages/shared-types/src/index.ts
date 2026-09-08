@@ -1,8 +1,20 @@
 import { z } from 'zod';
 export const EnvironmentSchema = z.enum(['testnet','live']);
 export type Environment = z.infer<typeof EnvironmentSchema>;
-export const VenueSchema = z.enum(['GATE','BINANCE','OKX','BYBIT']);
+export const CROSSEX_VENUES = ['GATE', 'BINANCE', 'OKX', 'BYBIT', 'KRAKEN', 'HYPERLIQUID', 'DERIBIT'] as const;
+export const EXTERNAL_VENUES = ['LIGHTER'] as const;
+export const SUPPORTED_VENUES = [...CROSSEX_VENUES, ...EXTERNAL_VENUES] as const;
+export const CrossExVenueSchema = z.enum(CROSSEX_VENUES);
+export const VenueSchema = z.enum(SUPPORTED_VENUES);
 export type Venue = z.infer<typeof VenueSchema>;
+export function isCrossExVenue(value: string): value is typeof CROSSEX_VENUES[number] {
+  return CrossExVenueSchema.safeParse(value).success;
+}
+export function isSupportedVenue(value: string): value is Venue {
+  return VenueSchema.safeParse(value).success;
+}
+export const SUPPORTED_FUTURE_SYMBOL = new RegExp(`^(${SUPPORTED_VENUES.join('|')})_FUTURE_([A-Z0-9]+)_(USDT|USDC|USD)$`);
+export const SupportedFutureSymbolSchema = z.string().regex(SUPPORTED_FUTURE_SYMBOL);
 export const ProductTypeSchema = z.enum(['spot','cross_margin','usdt_perp']);
 export type ProductType = z.infer<typeof ProductTypeSchema>;
 export const ConnectionStateSchema = z.enum(['connecting','healthy','degraded','reconnecting','stale','disconnected','authentication_failed','rate_limited']);

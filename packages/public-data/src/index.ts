@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Candle, CandleInterval, PublicMarketSnapshot } from '@gate-crossex/shared-types';
+import { CROSSEX_VENUES } from '@gate-crossex/shared-types';
 
 const BinanceBookSchema = z.object({
   bidPrice: z.string(),
@@ -249,7 +250,7 @@ export interface VenueContractSize {
   multiplier: string;
 }
 
-export const FUNDING_STAT_VENUES = ['GATE', 'BINANCE', 'OKX', 'BYBIT', 'KRAKEN', 'HYPERLIQUID', 'DERIBIT'] as const;
+export const FUNDING_STAT_VENUES = CROSSEX_VENUES;
 export type FundingStatVenue = typeof FUNDING_STAT_VENUES[number];
 
 /**

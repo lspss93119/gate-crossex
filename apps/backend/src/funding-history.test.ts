@@ -36,6 +36,22 @@ afterEach(() => {
 });
 
 describe('funding history service', () => {
+  it('uses native venue identity for funding pacing and keeps 60-day records under the default 90-day retention', async () => {
+    const database = testDatabase();
+    for (const age of [60, 91]) {
+      database.prepare('INSERT INTO funding_rate_history (symbol, funding_time, rate, fetched_at) VALUES (?, ?, ?, ?)')
+        .run('LIGHTER_FUTURE_BTC_USDC', NOW - age * DAY, '0.0001', new Date(NOW).toISOString());
+    }
+    const sleep = vi.fn(async () => undefined);
+    const service = new FundingHistoryService(database, gatewayWithHistory(vi.fn(async () => [])), {
+      now: () => NOW, sleep, venueSpacingMs: { LIGHTER: 1_000 },
+    });
+    const result = await service.loadMany(['LIGHTER_FUTURE_BTC_USDC', 'LIGHTER_FUTURE_ETH_USDC']);
+    expect(result.entries.map((entry) => entry.status)).toEqual(['ok', 'ok']);
+    expect(sleep).toHaveBeenCalledWith(1_000);
+    expect(database.prepare('SELECT funding_time FROM funding_rate_history').all()).toEqual([{ funding_time: NOW - 60 * DAY }]);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM funding_history_coverage').get()).toEqual({ count: 2 });
+  });
   it('builds an unbounded SQLite ranking snapshot without starting venue requests', () => {
     const database = testDatabase();
     const queryFundingHistory = vi.fn(async () => []);

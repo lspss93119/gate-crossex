@@ -11,12 +11,36 @@ import {
   SystemDiscoverySchema,
   TerminalStreamMessageSchema,
   VenueSchema,
+  CrossExVenueSchema,
+  SupportedFutureSymbolSchema,
+  isCrossExVenue,
+  isSupportedVenue,
   canonicalizeCrossExTransfer,
   contiguousCandleTail,
   crossExTransferRouteError,
   type Candle,
 } from './index.js';
 describe('shared schemas', () => { it('accepts supported environments and venues', () => { expect(EnvironmentSchema.parse('live')).toBe('live'); expect(VenueSchema.parse('GATE')).toBe('GATE'); }); });
+
+describe('application venue identity', () => {
+  it.each(['GATE', 'BINANCE', 'OKX', 'BYBIT', 'KRAKEN', 'HYPERLIQUID', 'DERIBIT', 'LIGHTER'])('recognizes %s', (venue) => {
+    expect(VenueSchema.safeParse(venue).success).toBe(true);
+  });
+  it('rejects unknown venues', () => {
+    expect(VenueSchema.safeParse('UNKNOWN').success).toBe(false);
+  });
+  it('accepts native funding symbols without granting CrossEx venue membership', () => {
+    expect(SupportedFutureSymbolSchema.safeParse('LIGHTER_FUTURE_BTC_USDC').success).toBe(true);
+    expect(SupportedFutureSymbolSchema.safeParse('UNKNOWN_FUTURE_BTC_USDC').success).toBe(false);
+    expect(isSupportedVenue('LIGHTER')).toBe(true);
+    expect(isCrossExVenue('LIGHTER')).toBe(false);
+    expect(CrossExVenueSchema.safeParse('LIGHTER').success).toBe(false);
+    for (const venue of ['GATE', 'BINANCE', 'OKX', 'BYBIT', 'KRAKEN', 'HYPERLIQUID', 'DERIBIT']) {
+      expect(isCrossExVenue(venue)).toBe(true);
+    }
+    expect(CrossExTransferRequestSchema.safeParse({ coin: 'USDC', amount: '1', from: 'SPOT', to: 'CROSSEX_LIGHTER' }).success).toBe(false);
+  });
+});
 
 describe('strategy config schema', () => {
   it('preserves a negative paired-position entry threshold', () => {

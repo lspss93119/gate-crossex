@@ -1,4 +1,4 @@
-const FAVORITE_SYMBOL = /^(GATE|BINANCE|OKX|BYBIT|KRAKEN|HYPERLIQUID|DERIBIT)_FUTURE_[A-Z0-9]+_(USDT|USDC|USD)$/;
+import { SUPPORTED_FUTURE_SYMBOL as FAVORITE_SYMBOL } from '@gate-crossex/shared-types';
 
 /**
  * Browser storage is user-editable and can outlive older application versions. Treat it as

@@ -7,6 +7,7 @@ import {
   type PublicMarketDataGateway,
 } from '@gate-crossex/public-data';
 import type { FundingHistoryEntry, FundingHistoryResponse, FundingHistorySeriesResponse } from '@gate-crossex/shared-types';
+import { SUPPORTED_FUTURE_SYMBOL as SYMBOL_VENUE } from '@gate-crossex/shared-types';
 import {
   listCachedFundingHistorySymbols,
   pruneFundingRateHistory,
@@ -24,7 +25,6 @@ const DEFAULT_TAIL_OVERLAP_MS = ONE_DAY_MS;
 const DEFAULT_RETENTION_MS = 90 * ONE_DAY_MS;
 const PRUNE_INTERVAL_MS = ONE_DAY_MS;
 const HYPERLIQUID_TAIL_SPACING_MS = 2_000;
-const SYMBOL_VENUE = /^(GATE|BINANCE|OKX|BYBIT|KRAKEN|HYPERLIQUID|DERIBIT)_FUTURE_/;
 const DEFAULT_MAX_REQUEST_SYMBOLS = 50;
 const DEFAULT_MAX_BACKGROUND_SYMBOLS = 140;
 
