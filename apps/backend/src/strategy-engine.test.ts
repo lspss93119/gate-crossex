@@ -162,6 +162,7 @@ function futuresPosition(
 
 class StubMarkets implements MarketSource {
   private readonly markets = new Map<string, LiveMarket>();
+  private readonly perSymbolStates = new Map<string, ReturnType<NonNullable<MarketSource['connectionState']>>>();
   private state: ReturnType<NonNullable<MarketSource['connectionState']>> = 'healthy';
 
   constructor(private readonly database: Database.Database) {}
@@ -191,7 +192,17 @@ class StubMarkets implements MarketSource {
 
   market(symbol: string): LiveMarket | null { return this.markets.get(symbol) ?? null; }
   connectionState(): ReturnType<NonNullable<MarketSource['connectionState']>> { return this.state; }
+  connectionStateFor(symbol: string): ReturnType<NonNullable<MarketSource['connectionState']>> {
+    return this.perSymbolStates.get(symbol) ?? this.state;
+  }
   setConnectionState(state: ReturnType<NonNullable<MarketSource['connectionState']>>): void { this.state = state; }
+  setConnectionStateFor(symbol: string, state: ReturnType<NonNullable<MarketSource['connectionState']>>): void {
+    this.perSymbolStates.set(symbol, state);
+  }
+  setSource(symbol: string, source: LiveMarket['source'], venue?: LiveMarket['venue']): void {
+    const current = this.markets.get(symbol);
+    if (current) this.markets.set(symbol, { ...current, source, venue: venue ?? current.venue });
+  }
 }
 
 interface Harness {
@@ -1810,5 +1821,48 @@ describe('strategy engine', () => {
     expect(runtime.strategyLogs(record.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ event: 'Strategy paused', condition: 'Account credentials changed' }),
     ]));
+  });
+
+  it('accepts a fresh Lighter public quote through the existing freshness gate', async () => {
+    const now = 1_771_990_800_000;
+    const { engine, markets } = await createHarness({ now: () => now });
+    const symbol = 'LIGHTER_FUTURE_BTC_USDC';
+    markets.set(symbol, '100', '101', new Date(now - 500).toISOString(), new Date(now - 100).toISOString());
+    markets.setSource(symbol, 'lighter_public_websocket', 'LIGHTER');
+    markets.setConnectionStateFor(symbol, 'healthy');
+
+    const freshMarket = (engine as unknown as { freshMarket: (marketSymbol: string) => LiveMarket | null }).freshMarket(symbol);
+    expect(freshMarket).toMatchObject({ symbol, venue: 'LIGHTER', source: 'lighter_public_websocket' });
+  });
+
+  it('rejects stale, transport-delayed, future, demo, and disconnected Lighter quotes per symbol', async () => {
+    const now = 1_771_990_800_000;
+    const { engine, markets } = await createHarness({ now: () => now });
+    const lighter = 'LIGHTER_FUTURE_BTC_USDC';
+    const crossEx = 'GATE_FUTURE_BTC_USDT';
+    markets.set(lighter, '100', '101', new Date(now - 20_000).toISOString(), new Date(now - 19_900).toISOString());
+    markets.setSource(lighter, 'lighter_public_websocket', 'LIGHTER');
+    markets.setConnectionStateFor(lighter, 'healthy');
+    const freshMarket = (engine as unknown as { freshMarket: (marketSymbol: string) => LiveMarket | null }).freshMarket;
+    expect(freshMarket.call(engine, lighter)).toBeNull();
+
+    markets.set(lighter, '100', '101', new Date(now - 4_000).toISOString(), new Date(now - 100).toISOString());
+    markets.setSource(lighter, 'lighter_public_websocket', 'LIGHTER');
+    expect(freshMarket.call(engine, lighter)).toBeNull();
+
+    markets.set(lighter, '100', '101', new Date(now + 3_000).toISOString(), new Date(now).toISOString());
+    markets.setSource(lighter, 'lighter_public_websocket', 'LIGHTER');
+    expect(freshMarket.call(engine, lighter)).toBeNull();
+
+    markets.set(lighter, '100', '101', new Date(now - 100).toISOString(), new Date(now).toISOString());
+    markets.setSource(lighter, 'demo_seed', 'LIGHTER');
+    expect(freshMarket.call(engine, lighter)).toBeNull();
+
+    markets.setSource(lighter, 'lighter_public_websocket', 'LIGHTER');
+    markets.setConnectionStateFor(lighter, 'disconnected');
+    markets.set(crossEx, '100', '101', new Date(now - 100).toISOString(), new Date(now).toISOString());
+    markets.setConnectionStateFor(crossEx, 'healthy');
+    expect(freshMarket.call(engine, lighter)).toBeNull();
+    expect(freshMarket.call(engine, crossEx)).toMatchObject({ source: 'gate_crossex_websocket' });
   });
 });

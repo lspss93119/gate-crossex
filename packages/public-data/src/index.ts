@@ -298,6 +298,21 @@ export interface VenueFundingStat {
   change24h: string | null;
 }
 
+/** One validated native market row from Lighter's public order-book directory. */
+export interface LighterMarketDirectoryEntry {
+  symbol: string;
+  marketId: number;
+  marketType: string;
+  status: string;
+  supportedSizeDecimals: number;
+  supportedPriceDecimals: number;
+  markPrice: string | null;
+  indexPrice: string | null;
+  lastTradePrice: string | null;
+  openInterest: string | null;
+  dailyPriceChange: string | null;
+}
+
 /** One realized funding settlement/accrual from a venue's public history feed. */
 export interface FundingRatePoint {
   timestamp: number;
@@ -313,6 +328,8 @@ export interface PublicMarketDataGateway {
   queryContractSizes?(venue: 'GATE' | 'OKX'): Promise<VenueContractSize[]>;
   /** Optional bulk funding/open-interest stats for every perpetual a venue lists. */
   queryVenueFundingStats?(venue: FundingStatVenue): Promise<VenueFundingStat[]>;
+  /** Validated native Lighter market metadata, including inactive and spot rows. */
+  queryLighterMarketDirectory?(): Promise<LighterMarketDirectoryEntry[]>;
   /** Optional realized funding history for one CrossEx perpetual symbol. */
   queryFundingHistory?(crossExSymbol: string, startTime: number, endTime: number, signal?: AbortSignal): Promise<FundingRatePoint[]>;
 }
@@ -904,18 +921,39 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
     return run;
   }
 
-  private async loadLighterMetadata(signal?: AbortSignal): Promise<z.infer<typeof LighterMarketSchema>[]> {
+  private async loadLighterMetadataRows(signal?: AbortSignal): Promise<z.infer<typeof LighterMarketSchema>[]> {
     if (signal?.aborted) throw new PublicMarketDataError('ABORTED');
     if (this.lighterMetadata && this.now() - this.lighterMetadata.fetchedAt < 30_000) return this.lighterMetadata.rows;
     const payload = parsePayload(LighterMetadataSchema, await this.fetchLighter('orderBookDetails', signal));
-    const rows = payload.order_book_details.filter((row) => row.market_type === 'perp'
-      && row.status === 'active' && /^[A-Z0-9]+$/.test(row.symbol));
+    const rows = payload.order_book_details;
     if (new Set(rows.map((row) => row.symbol)).size !== rows.length
       || new Set(rows.map((row) => row.market_id)).size !== rows.length) {
       throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
     }
     this.lighterMetadata = { rows, fetchedAt: this.now() };
     return rows;
+  }
+
+  private async loadLighterMetadata(signal?: AbortSignal): Promise<z.infer<typeof LighterMarketSchema>[]> {
+    return (await this.loadLighterMetadataRows(signal)).filter((row) => row.market_type === 'perp'
+      && row.status === 'active' && /^[A-Z0-9]+$/.test(row.symbol));
+  }
+
+  async queryLighterMarketDirectory(): Promise<LighterMarketDirectoryEntry[]> {
+    const rows = await this.loadLighterMetadataRows();
+    return rows.map((row) => ({
+      symbol: row.symbol,
+      marketId: row.market_id,
+      marketType: row.market_type,
+      status: row.status,
+      supportedSizeDecimals: row.supported_size_decimals,
+      supportedPriceDecimals: row.supported_price_decimals,
+      markPrice: row.mark_price == null ? null : String(row.mark_price),
+      indexPrice: row.index_price == null ? null : String(row.index_price),
+      lastTradePrice: row.last_trade_price == null ? null : String(row.last_trade_price),
+      openInterest: row.open_interest == null ? null : String(row.open_interest),
+      dailyPriceChange: row.daily_price_change == null ? null : String(row.daily_price_change),
+    }));
   }
 
   private async lighterMarket(symbol: ParsedSymbol, signal?: AbortSignal): Promise<z.infer<typeof LighterMarketSchema>> {

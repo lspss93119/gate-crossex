@@ -7,9 +7,16 @@ import {
   type OrderBookSnapshot,
   type PublicTrade,
 } from '@gate-crossex/shared-types';
+import {
+  CROSS_EX_MARKET_VENUES,
+  type CrossExMarketVenue,
+  type LiveMarket,
+  type MarketDefinition,
+  type MarketSnapshot,
+} from './market/types.js';
 
 const MARKET_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'SUI', 'PEPE', 'AAVE', 'LINK', 'ARB'] as const;
-const MARKET_VENUES = ['GATE', 'BINANCE', 'OKX', 'BYBIT', 'KRAKEN', 'HYPERLIQUID', 'DERIBIT'] as const;
+const MARKET_VENUES = CROSS_EX_MARKET_VENUES;
 const CANDLE_INTERVALS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'] as const;
 const MAX_CANDLES = 500;
 const MAX_TRADES = 80;
@@ -19,36 +26,7 @@ const MAX_SYMBOLS_PER_SUBSCRIPTION = 100;
 const DYNAMIC_MARKET_IDLE_MS = 30 * 60_000;
 const DYNAMIC_MARKET_SWEEP_MS = 5 * 60_000;
 
-type MarketVenue = typeof MARKET_VENUES[number];
-
-export interface LiveMarket {
-  symbol: string;
-  venue: MarketVenue;
-  asset: string;
-  lastPrice: string;
-  bidPrice: string;
-  bidSize: string;
-  askPrice: string;
-  askSize: string;
-  open24h: string;
-  high24h: string;
-  low24h: string;
-  volume24h: string;
-  quoteVolume24h: string;
-  fundingRate: string;
-  nextFundingAt: string;
-  openInterest: string;
-  openInterestValue: string;
-  receivedAt: string;
-  updatedAt: string;
-  source: 'gate_crossex_websocket' | 'demo_seed';
-}
-
-export interface MarketSnapshot {
-  connectionState: 'connecting' | 'healthy' | 'reconnecting' | 'stale' | 'disconnected';
-  updatedAt: string;
-  markets: LiveMarket[];
-}
+type MarketVenue = CrossExMarketVenue;
 
 export type MarketHubMessage =
   | { type: 'market.snapshot'; payload: MarketSnapshot }
@@ -57,12 +35,6 @@ export type MarketHubMessage =
   | { type: 'trade.update'; payload: { symbol: string; trade: PublicTrade } }
   | { type: 'kline.snapshot'; payload: { symbol: string; interval: CandleInterval; candles: Candle[] } }
   | { type: 'kline.update'; payload: { symbol: string; interval: CandleInterval; candle: Candle } };
-
-export interface MarketDefinition {
-  symbol: string;
-  venue: MarketVenue;
-  asset: string;
-}
 
 /** Streamed symbols beyond the seed set are bounded so a long session cannot grow subscriptions without limit. */
 const MAX_DYNAMIC_SYMBOLS = 1_000;
@@ -718,3 +690,4 @@ export class CrossExMarketHub {
 
 export { invalidSymbolsFromMessage, CANDLE_INTERVALS };
 export type { CandleInterval };
+export type { LiveMarket, MarketDefinition, MarketSnapshot } from './market/types.js';

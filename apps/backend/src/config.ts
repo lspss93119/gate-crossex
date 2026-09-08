@@ -17,6 +17,7 @@ export interface BackendConfig {
   gateRestBaseUrl: string;
   gatePublicWebSocketUrl: string;
   gatePrivateWebSocketUrl: string;
+  lighterPublicWebSocketUrl: string;
 }
 
 function parsePort(value: string, name: string): number {
@@ -59,5 +60,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Backen
     gateRestBaseUrl: environment.GCT_GATE_REST_URL ?? 'https://api.gateio.ws/api/v4',
     gatePublicWebSocketUrl: environment.GCT_GATE_PUBLIC_WS_URL ?? 'wss://api.gateio.ws/ws/crossex/public',
     gatePrivateWebSocketUrl: environment.GCT_GATE_PRIVATE_WS_URL ?? 'wss://api.gateio.ws/ws/crossex',
+    lighterPublicWebSocketUrl: environment.GCT_LIGHTER_WS_URL ?? 'wss://mainnet.zklighter.elliot.ai/stream?readonly=true',
   };
 }

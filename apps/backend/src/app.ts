@@ -73,6 +73,8 @@ import { FundingHistoryService } from './funding-history.js';
 import { FundingOverviewService } from './funding-overview.js';
 import { canonicalMarketAsset } from './market-asset-aliases.js';
 import { CrossExMarketHub, CANDLE_INTERVALS, type MarketDefinition, type MarketHubMessage } from './market-hub.js';
+import { CompositeMarketSource } from './market/composite-market-source.js';
+import { LighterMarketFeed } from './market/lighter-market-feed.js';
 import { StrategyEngine, StrategyEngineError, type StrategyEngineOptions } from './strategy-engine.js';
 import { TradingSession } from './trading-session.js';
 import { TradingRuntime, TradingRuntimeError, unresolvedOrderDetails } from './trading-runtime.js';
@@ -228,6 +230,7 @@ export interface BuildAppOptions {
   crossExGateway: ReadOnlyCrossExGateway;
   publicMarketGateway: PublicMarketDataGateway;
   marketHub?: CrossExMarketHub;
+  lighterMarketFeed?: Pick<LighterMarketFeed, 'market' | 'ensureMarket' | 'connectionState' | 'connectionStateFor' | 'start' | 'stop'>;
   tradingSession?: TradingSession;
   startMarketStream?: boolean;
   logger?: boolean;
@@ -798,14 +801,27 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     return definitions !== null && marketHub.ensureMarkets(definitions) && marketHub.market(symbol) !== null;
   };
 
+  const lighterMarketFeed = options.lighterMarketFeed ?? new LighterMarketFeed({
+    url: config.lighterPublicWebSocketUrl,
+    directory: async () => (await publicMarketGateway.queryLighterMarketDirectory?.()) ?? [],
+  });
+  const marketSource = new CompositeMarketSource({
+    market: (symbol) => marketHub.market(symbol),
+    ensureMarket: ensureMarketKnown,
+    connectionState: () => marketHub.connectionState(),
+  }, lighterMarketFeed);
+
   // Strategies may trade catalog-only tickers (e.g. stock perps) that nothing has watched yet, so
   // the engine's market source can register them on demand at launch.
   const strategyEngine = new StrategyEngine(database, tradingSession, tradingRuntime, {
-    market: (symbol) => marketHub.market(symbol),
-    ensureMarket: ensureMarketKnown,
+    market: (symbol) => marketSource.market(symbol),
+    ensureMarket: (symbol) => marketSource.ensureMarket(symbol),
     // Unit/injected hubs may deliberately supply static market objects without starting a socket.
     // Production passes startMarketStream=true, where stream health must gate every strategy.
-    ...(options.startMarketStream ? { connectionState: () => marketHub.connectionState() } : {}),
+    ...(options.startMarketStream ? {
+      connectionState: () => marketSource.connectionState(),
+      connectionStateFor: (symbol: string) => marketSource.connectionStateFor(symbol),
+    } : {}),
   }, options.strategyEngineOptions);
 
   const quiesceForCredentialMutation = async (): Promise<void> => {
@@ -1008,6 +1024,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   let portfolioReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let databaseMaintenanceTimer: ReturnType<typeof setInterval> | null = null;
+  let marketSourcesStarted = false;
   const schedulePortfolioReconciliation = () => {
     if (!options.startMarketStream) return;
     const interval = Math.round(5 * 60_000 * (0.9 + Math.random() * 0.2));
@@ -1020,6 +1037,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   if (options.startMarketStream) {
     marketHub.start();
+    await marketSource.start();
+    marketSourcesStarted = true;
     privateStream.start();
     strategyEngine.start();
     fundingHistoryService.startBackground();
@@ -1045,6 +1064,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     if (portfolioReconcileTimer) clearTimeout(portfolioReconcileTimer);
     if (databaseMaintenanceTimer) clearInterval(databaseMaintenanceTimer);
     livePortfolio.stop();
+    if (marketSourcesStarted) await marketSource.stop();
     marketHub.stop();
     privateStream.stop();
   });

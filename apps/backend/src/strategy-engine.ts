@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { Decimal } from 'decimal.js';
-import type { LiveMarket } from './market-hub.js';
+import type { LiveMarket, MarketConnectionState } from './market/types.js';
 import type { TradingSession } from './trading-session.js';
 import { GateApiError } from './crossex-client.js';
 import { nativeMarketAsset } from './market-asset-aliases.js';
@@ -25,7 +25,9 @@ export interface MarketSource {
   /** Register a catalog-known symbol on demand so its ticker streams; false when unknown. */
   ensureMarket?(symbol: string): boolean;
   /** Current upstream public-stream state, when the source can expose it. */
-  connectionState?(): 'connecting' | 'healthy' | 'reconnecting' | 'stale' | 'disconnected';
+  connectionState?(): MarketConnectionState;
+  /** Per-symbol upstream state; preferred when sources are composed by venue. */
+  connectionStateFor?(symbol: string): MarketConnectionState;
 }
 
 export interface StrategyEngineOptions {
@@ -762,9 +764,10 @@ export class StrategyEngine {
   }
 
   private freshMarket(symbol: string): LiveMarket | null {
-    if (this.markets.connectionState && this.markets.connectionState() !== 'healthy') return null;
+    const connectionState = this.markets.connectionStateFor?.(symbol) ?? this.markets.connectionState?.();
+    if (connectionState && connectionState !== 'healthy') return null;
     const market = this.markets.market(symbol);
-    if (!market || market.source !== 'gate_crossex_websocket') return null;
+    if (!market || !['gate_crossex_websocket', 'lighter_public_websocket'].includes(market.source)) return null;
     const sourceTimestamp = Date.parse(market.updatedAt);
     const receivedTimestamp = Date.parse(market.receivedAt);
     const age = this.options.now() - sourceTimestamp;

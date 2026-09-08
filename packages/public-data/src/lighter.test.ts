@@ -54,6 +54,27 @@ describe('Lighter public funding', () => {
       lastPrice: '79999', source: 'lighter_public_rest' });
   });
 
+  it('exposes the validated native market directory without applying the funding eligibility filter', async () => {
+    const { client } = clientFor();
+
+    const rows = await client.queryLighterMarketDirectory();
+
+    expect(rows).toEqual([
+      { symbol: 'BTC', marketId: 1, marketType: 'perp', status: 'active',
+        supportedSizeDecimals: 5, supportedPriceDecimals: 1, markPrice: '80000', indexPrice: '80001',
+        lastTradePrice: '79999', openInterest: '2000', dailyPriceChange: '-1.2' },
+      { symbol: 'ETH', marketId: 0, marketType: 'perp', status: 'active',
+        supportedSizeDecimals: 5, supportedPriceDecimals: 1, markPrice: '80000', indexPrice: '80001',
+        lastTradePrice: '79999', openInterest: '2000', dailyPriceChange: '-1.2' },
+      { symbol: 'OLD', marketId: 10, marketType: 'perp', status: 'inactive',
+        supportedSizeDecimals: 5, supportedPriceDecimals: 1, markPrice: '80000', indexPrice: '80001',
+        lastTradePrice: '79999', openInterest: '2000', dailyPriceChange: '-1.2' },
+      { symbol: 'SPOT', marketId: 2048, marketType: 'spot', status: 'active',
+        supportedSizeDecimals: 5, supportedPriceDecimals: 1, markPrice: '80000', indexPrice: '80001',
+        lastTradePrice: '79999', openInterest: '2000', dailyPriceChange: '-1.2' },
+    ]);
+  });
+
   it('retrieves 30 days in bounded time pages and preserves signed percentage rates, filtering, ordering and deduplication', async () => {
     const end = Math.floor(NOW / HOUR) * HOUR;
     const start = end - 720 * HOUR;

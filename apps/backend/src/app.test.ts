@@ -15,6 +15,8 @@ import { DEFAULT_CREDENTIAL_PROFILE, EnvFileCredentialVault, MemoryCredentialVau
 import { GateApiError, type CrossExOrderRequest, type GateCrossExAccount, type GateCrossExOrder, type GateCrossExPortfolio, type GateCrossExRiskLimit, type GateCrossExSymbol, type GateFeeRate, type GateOrderActionResponse, type GateSpotAccount, type GateTransferCoin, type GateTransferRecord, type GateAccountBookRecord, type GateTransferResponse, type TradingCrossExGateway } from './crossex-client.js';
 import { openDatabase } from './database.js';
 import { CrossExMarketHub } from './market-hub.js';
+import type { LighterMarketFeed } from './market/lighter-market-feed.js';
+import type { LiveMarket, MarketConnectionState } from './market/types.js';
 import { TradingSession } from './trading-session.js';
 
 const accountFixture: GateCrossExAccount = {
@@ -374,12 +376,29 @@ interface TestContext {
   directory: string;
 }
 
+class FakeLighterMarketFeed {
+  startCount = 0;
+  stopCount = 0;
+  readonly ensuredSymbols: string[] = [];
+
+  async start(): Promise<void> { this.startCount += 1; }
+  async stop(): Promise<void> { this.stopCount += 1; }
+  market(symbol: string): LiveMarket | null { void symbol; return null; }
+  ensureMarket(symbol: string): boolean {
+    this.ensuredSymbols.push(symbol);
+    return symbol === 'LIGHTER_FUTURE_BTC_USDC';
+  }
+  connectionState(): MarketConnectionState { return 'disconnected'; }
+  connectionStateFor(symbol: string): MarketConnectionState { void symbol; return 'disconnected'; }
+}
+
 const resources: TestContext[] = [];
 
 async function createTestApp(options: {
   liveTradingEnabled?: boolean;
   marketHub?: CrossExMarketHub;
   startMarketStream?: boolean;
+  lighterMarketFeed?: Pick<LighterMarketFeed, 'market' | 'ensureMarket' | 'connectionState' | 'connectionStateFor' | 'start' | 'stop'>;
   directory?: string;
   borosStrategyFetcher?: () => Promise<unknown>;
   borosMarketFeeFetcher?: (marketIds: number[]) => Promise<unknown>;
@@ -407,6 +426,7 @@ async function createTestApp(options: {
     publicMarketGateway,
     tradingSession,
     marketHub: options.marketHub,
+    lighterMarketFeed: options.lighterMarketFeed,
     startMarketStream: options.startMarketStream,
     borosStrategyFetcher: options.borosStrategyFetcher,
     borosMarketFeeFetcher: options.borosMarketFeeFetcher,
@@ -515,6 +535,21 @@ afterEach(async () => {
 });
 
 describe('local backend', () => {
+  it('starts and stops the public Lighter feed without widening CrossEx browser markets', async () => {
+    const lighterMarketFeed = new FakeLighterMarketFeed();
+    const marketHub = new CrossExMarketHub('ws://127.0.0.1:1');
+    const { app } = await createTestApp({ startMarketStream: true, marketHub, lighterMarketFeed });
+
+    expect(lighterMarketFeed.startCount).toBe(1);
+    const response = await app.inject({ method: 'GET', url: '/api/markets', headers: { host: '127.0.0.1:17840' } });
+    expect(response.statusCode).toBe(200);
+    expect((response.json().markets as Array<{ venue: string }>).every((market) => market.venue !== 'LIGHTER')).toBe(true);
+    expect(lighterMarketFeed.ensuredSymbols).toEqual([]);
+
+    await app.close();
+    expect(lighterMarketFeed.stopCount).toBe(1);
+  });
+
   it('reports live-only mode, migration state, and script-free credential handling', async () => {
     const { app } = await createTestApp();
     const health = await app.inject({ method: 'GET', url: '/health', headers: { host: '127.0.0.1:17840' } });
