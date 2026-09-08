@@ -75,6 +75,12 @@ export class FundingOverviewService {
     if (last === null) await refresh;
   }
 
+  /** Funding-only symbols are discovered from the external venue sweep, never registered in the trading catalog. */
+  hasFundingSymbol(symbol: string): boolean {
+    return EXTERNAL_VENUES.some((venue) => [...(this.venues.get(venue)?.rows.values() ?? [])].some((stat) =>
+      `${venue}_FUTURE_${stat.base}_${stat.quote}` === symbol));
+  }
+
   private currentFreshMs(now = this.now()): number {
     return fundingOverviewRefreshInterval(now) === DEFAULT_SETTLEMENT_FRESH_MS
       ? this.settlementFreshMs

@@ -20,18 +20,19 @@ import {
   fundingPercentScaledTo8h,
   fundingHistoryRequestKey,
 } from './funding-rates.js';
-import type { ExchangeLogoId } from './exchange-logos.js';
 import {
   FUNDING_VENUE_COLORS,
   SEED_ASSETS,
   VenueIcon,
   assetIcon,
   assetName,
-  exchanges,
+  fundingExchanges,
   fundingVenueName,
+  isExecutableFundingVenue,
   type PairedPositionPrefill,
   type FundingMetric,
   type FundingSortKey,
+  type FundingVenueId,
   type SortDirection,
 } from './route-shared.js';
 import { useLanguage } from './i18n.js';
@@ -42,15 +43,15 @@ interface FundingPairRow {
   asset: string;
   name: string;
   icon: string;
-  /** Native percent per venue settlement, aligned with `exchanges`. */
+  /** Native percent per venue settlement, aligned with `fundingExchanges`. */
   rates: Array<number | null>;
-  /** Comparable 8h percent, aligned with `exchanges`. */
+  /** Comparable 8h percent, aligned with `fundingExchanges`. */
   rates8h: Array<number | null>;
-  /** Native funding interval in hours, aligned with `exchanges`. */
+  /** Native funding interval in hours, aligned with `fundingExchanges`. */
   intervalHours: Array<number | null>;
   /** Preferred CrossEx symbol per venue, used to request realized funding history. */
   symbols: Array<string | null>;
-  /** Whether the venue lists the pair at all, aligned with `exchanges`. */
+  /** Whether the venue lists the pair at all, aligned with `fundingExchanges`. */
   listed: boolean[];
   /** Aggregate open interest in USD across venues reporting it. */
   oi: number;
@@ -61,7 +62,7 @@ interface FundingPairRow {
 
 type FundingHistoryDuration = 1 | 7 | 30;
 type FundingHistoryCache = Record<FundingHistoryDuration, Record<string, FundingHistoryEntry>>;
-type VisibleFundingExchange = { venue: (typeof exchanges)[number]; index: number };
+type VisibleFundingExchange = { venue: (typeof fundingExchanges)[number]; index: number };
 
 function isHistoricalMetric(metric: FundingMetric): metric is '24h' | '7d' | '30d' {
   return metric === '24h' || metric === '7d' || metric === '30d';
@@ -93,7 +94,7 @@ function fundingArb(
   visibleExchanges: readonly VisibleFundingExchange[],
   metric: FundingMetric,
   historyBySymbol: Readonly<Record<string, FundingHistoryEntry>>,
-): { spread: number | null; low?: { venue: (typeof exchanges)[number]; rate: number }; high?: { venue: (typeof exchanges)[number]; rate: number } } {
+): { spread: number | null; low?: { venue: (typeof fundingExchanges)[number]; rate: number }; high?: { venue: (typeof fundingExchanges)[number]; rate: number } } {
   const selectedRates = visibleExchanges.flatMap(({ venue, index }) => {
     const rate = metric === 'Per interval' || metric === 'APR'
       ? currentFundingComparisonRate(item.rates8h[index], metric)
@@ -132,7 +133,7 @@ function sortedFundingOrder(
   return [...rows].sort((leftRow, rightRow) => {
     if (sortKey === 'asset') return leftRow.asset.localeCompare(rightRow.asset) * multiplier;
     if (sortKey === 'oi') return (leftRow.oi - rightRow.oi) * multiplier || leftRow.asset.localeCompare(rightRow.asset);
-    const exchangeIndex = exchanges.findIndex((venue) => venue.id === sortKey);
+    const exchangeIndex = fundingExchanges.findIndex((venue) => venue.id === sortKey);
     const left = sortKey === 'arb' ? fundingArb(leftRow, visibleExchanges, metric, historyBySymbol).spread
       : sortKey === 'average' ? averageFunding(leftRow, visibleExchanges, metric, historyBySymbol).rate
         : fundingMetricRate(leftRow, exchangeIndex, metric, historyBySymbol);
@@ -354,7 +355,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
 }) {
   const { t, language } = useLanguage();
   const [query, setQuery] = useState('');
-  const [selectedExchanges, setSelectedExchanges] = useState(exchanges.map((exchange) => exchange.id));
+  const [selectedExchanges, setSelectedExchanges] = useState<FundingVenueId[]>(fundingExchanges.map((exchange) => exchange.id));
   const [sortKey, setSortKey] = useState<FundingSortKey>('oi');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [overviewState, setOverviewState] = useState<'loading' | 'live' | 'failed'>(fundingOverview ? 'live' : 'loading');
@@ -426,7 +427,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
       const listed: boolean[] = [];
       let oi = 0;
       let oiVenues = 0;
-      for (const exchange of exchanges) {
+      for (const exchange of fundingExchanges) {
         const venueCode = exchange.id.toUpperCase();
         const entry = entryByVenue.get(venueCode);
         const hub = hubMarkets.get(`${venueCode}:${asset}`);
@@ -456,7 +457,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
   const parsedMinOi = Number(minOiMillionsText);
   const minAvgOiUsd = Number.isFinite(parsedMinOi) && parsedMinOi > 0 ? parsedMinOi * 1_000_000 : 0;
   const visibleExchanges = useMemo(
-    () => exchanges.map((venue, index) => ({ venue, index })).filter(({ venue }) => selectedExchanges.includes(venue.id)),
+    () => fundingExchanges.map((venue, index) => ({ venue, index })).filter(({ venue }) => selectedExchanges.includes(venue.id)),
     [selectedExchanges],
   );
 
@@ -598,7 +599,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
     setPreparingSort(null);
   }
 
-  function toggleExchange(exchangeId: ExchangeLogoId) {
+  function toggleExchange(exchangeId: FundingVenueId) {
     const removing = selectedExchanges.includes(exchangeId);
     if (removing && selectedExchanges.length === 1) return;
     cancelSortPreparation();
@@ -712,7 +713,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
     <section className="funding-card terminal-panel">
       <div className="exchange-filter" role="group" aria-label="Filter exchanges">
         <span>{t('Exchanges')}</span>
-        {exchanges.map((venue) => <button key={venue.id} className={selectedExchanges.includes(venue.id) ? 'selected' : ''} aria-pressed={selectedExchanges.includes(venue.id)} onClick={() => toggleExchange(venue.id)}><VenueIcon id={venue.id} short={venue.short} />{venue.name}<em>{selectedExchanges.includes(venue.id) ? '✓' : '+'}</em></button>)}
+        {fundingExchanges.map((venue) => <button key={venue.id} className={selectedExchanges.includes(venue.id) ? 'selected' : ''} aria-pressed={selectedExchanges.includes(venue.id)} onClick={() => toggleExchange(venue.id)}><VenueIcon id={venue.id} short={venue.short} />{venue.name}<em>{selectedExchanges.includes(venue.id) ? '✓' : '+'}</em></button>)}
         <small>{selectedExchanges.length} {t('selected')} · {t('at least one required')}</small>
       </div>
       <div className="oi-filter" role="group" aria-label="Minimum average open interest">
@@ -745,6 +746,11 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
             const arb = getArb(item);
             const lowArb = arb.low;
             const highArb = arb.high;
+            const longVenue = lowArb && isExecutableFundingVenue(lowArb.venue.id) ? lowArb.venue.id : null;
+            const shortVenue = highArb && isExecutableFundingVenue(highArb.venue.id) ? highArb.venue.id : null;
+            const executableArb = lowArb && highArb && longVenue && shortVenue
+              ? { low: lowArb, high: highArb, longVenue, shortVenue }
+              : null;
             const average = getAverage(item);
             return <tr key={item.asset} className="funding-clickable-row" onClick={() => onOpenAsset(item.asset)}>
               <td><button className="funding-history-link" aria-label={`${item.asset} ${t('Historical funding')}`} onClick={(event) => { event.stopPropagation(); onOpenAsset(item.asset); }}><span className={`funding-asset asset-tone-${index % 5}`}>{item.icon}</span><span><strong>{item.asset}</strong><small>{item.name} {t('Perpetual').toLowerCase()}</small></span></button></td>
@@ -752,10 +758,10 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
                 ? <><strong className="oi-value">{formatOi(item.oi)}</strong><span className="oi-bar"><i style={{ width: `${Math.max(4, (item.oi / maxOi) * 100)}%` }} /></span><small className="oi-avg">{t('avg')} {formatOi(item.avgOi)}</small></>
                 : <><strong className="oi-value">—</strong><small className="oi-avg">{t('no data')}</small></>}</td>
               <td className="average-funding-cell"><strong className={average.rate === null ? 'funding-rate funding-missing' : 'funding-rate funding-average'}>{average.rate === null ? '—' : formatRate(average.rate)}</strong></td>
-              <td className="arb-cell"><div className="arb-cell-layout"><span className="arb-summary"><strong>{arb.spread !== null ? formatRate(arb.spread) : '—'}</strong><small>{visibleExchanges.length <= 1 ? t('Select 2+ exchanges') : arb.spread !== null ? `${t('Long')} ${lowArb?.venue.short} · ${t('Short')} ${highArb?.venue.short}` : t('no data')}</small></span>{lowArb && highArb && <button className="arb-strategy-button" title={t('Open hedge strategy')} aria-label={`${t('Open hedge strategy')}: ${item.asset}, ${t('Long')} ${lowArb.venue.name}, ${t('Short')} ${highArb.venue.name}`} onClick={(event) => {
+              <td className="arb-cell"><div className="arb-cell-layout"><span className="arb-summary"><strong>{arb.spread !== null ? formatRate(arb.spread) : '—'}</strong><small>{visibleExchanges.length <= 1 ? t('Select 2+ exchanges') : arb.spread !== null ? `${t('Long')} ${lowArb?.venue.short} · ${t('Short')} ${highArb?.venue.short}` : t('no data')}</small></span>{lowArb && highArb && (executableArb ? <button className="arb-strategy-button" title={t('Open hedge strategy')} aria-label={`${t('Open hedge strategy')}: ${item.asset}, ${t('Long')} ${executableArb.low.venue.name}, ${t('Short')} ${executableArb.high.venue.name}`} onClick={(event) => {
                 event.stopPropagation();
-                onOpenStrategy({ asset: item.asset, longVenue: lowArb.venue.id, shortVenue: highArb.venue.id });
-              }} onKeyDown={(event) => event.stopPropagation()}><span aria-hidden="true">⇄</span><em>{t('Open')}</em></button>}</div></td>
+                onOpenStrategy({ asset: item.asset, longVenue: executableArb.longVenue, shortVenue: executableArb.shortVenue });
+              }} onKeyDown={(event) => event.stopPropagation()}><span aria-hidden="true">⇄</span><em>{t('Open')}</em></button> : <small className="arb-readonly">{t('Lighter funding is read-only')}</small>)}</div></td>
               {visibleExchanges.map(({ venue, index: rateIndex }) => {
                 const historicalMetric = metric === '24h' || metric === '7d' || metric === '30d';
                 const symbol = item.symbols[rateIndex];
@@ -795,7 +801,7 @@ export function FundingRatesView({ marketSnapshot, onMarketFallback, onOpenAsset
           {overview ? t('Aggregated from venue public REST · refreshed 5m, 30s near settlement') : t(marketSnapshot?.markets.some((market) => market.source === 'gate_crossex_websocket') ? 'Live Gate CrossEx WebSocket' : 'Seed data while awaiting market updates')}
           {overviewState === 'failed' && !overview ? <> · {t('Venue REST unavailable — showing streamed markets only')}</> : null}
           {(overview?.venueStatus.filter((status) => status.status === 'error') ?? []).length > 0
-            ? <> · {overview?.venueStatus.filter((status) => status.status === 'error').map((status) => exchanges.find((exchange) => exchange.id === status.venue.toLowerCase())?.name ?? status.venue).join(', ')} {t('unavailable')}</>
+            ? <> · {overview?.venueStatus.filter((status) => status.status === 'error').map((status) => fundingExchanges.find((exchange) => exchange.id === status.venue.toLowerCase())?.name ?? status.venue).join(', ')} {t('unavailable')}</>
             : null}
         </span>
         <span>{t('Click any row to inspect realized funding history.')} · {t('Historical settlements stored locally · latest tail refreshed ~15m')} · {t('OI averaged across venues reporting it')}</span>

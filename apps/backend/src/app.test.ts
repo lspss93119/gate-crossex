@@ -302,6 +302,10 @@ class FakePublicMarketGateway implements PublicMarketDataGateway {
       venue, base: 'BTC', quote: 'USDT', fundingRate: '0.00001625', fundingIntervalHours: 1, fundingRate8h: '0.00013', nextFundingAt: null,
       openInterestValue: '2500000', lastPrice: '50000', change24h: '0.0125',
     }];
+    if (venue === 'LIGHTER') return [{
+      venue, base: 'BTC', quote: 'USDC', fundingRate: '0.000012', fundingIntervalHours: 1, fundingRate8h: '0.000096', nextFundingAt: '2026-07-11T02:00:00.000Z',
+      openInterestValue: '4000000', lastPrice: '50005', change24h: '-0.005',
+    }];
     return [];
   }
 
@@ -1567,6 +1571,14 @@ describe('local backend', () => {
     expect(btc?.venues.find((venue) => venue.venue === 'BINANCE')).toMatchObject({
       fundingRate: '0.0001', fundingIntervalHours: 8, fundingRate8h: '0.0001', openInterestValue: null, lastPrice: '50010', change24h: '-0.01',
     });
+    expect(btc?.venues.find((venue) => venue.venue === 'LIGHTER')).toMatchObject({
+      symbol: 'LIGHTER_FUTURE_BTC_USDC', fundingRate: '0.000012', fundingIntervalHours: 1, fundingRate8h: '0.000096',
+      openInterestValue: '4000000', lastPrice: '50005', change24h: '-0.005',
+    });
+    const catalog = await app.inject({ method: 'GET', url: '/api/markets/catalog', headers });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json().assets.flatMap((asset: { venues: Array<{ venue: string }> }) => asset.venues)
+      .some((venue: { venue: string }) => venue.venue === 'LIGHTER')).toBe(false);
     // Catalog pairs without venue stats still appear so the page can render the full universe.
     expect(body.assets.find((entry) => entry.asset === 'ZETA')?.venues[0]).toMatchObject({
       venue: 'GATE', fundingRate: null, lastPrice: null, change24h: null,
@@ -1592,7 +1604,7 @@ describe('local backend', () => {
     expect(btc?.venues.every((venue) => venue.fundingRate === null)).toBe(true);
   });
 
-  it('serves and caches realized funding history only for catalog symbols', async () => {
+  it('serves and caches realized funding history for both catalog and funding-only symbols', async () => {
     const { app, gateway, publicMarketGateway } = await createTestApp();
     gateway.extraSymbols = [catalogSymbol('GATE_FUTURE_BTC_USDT', 'GATE')];
     const headers = { host: '127.0.0.1:17840', 'x-gct-read-intent': 'funding-history' };
@@ -1677,6 +1689,16 @@ describe('local backend', () => {
       }],
     });
     expect(publicMarketGateway.fundingHistoryQueryCount).toBe(1);
+
+    const lighter = await app.inject({
+      method: 'POST',
+      url: '/api/markets/funding-history',
+      headers,
+      payload: { symbols: ['LIGHTER_FUTURE_BTC_USDC'] },
+    });
+    expect(lighter.statusCode).toBe(200);
+    expect(lighter.json()).toMatchObject({ entries: [{ symbol: 'LIGHTER_FUTURE_BTC_USDC', status: 'pending' }] });
+    await vi.waitFor(() => expect(publicMarketGateway.fundingHistoryQueryCount).toBe(2));
 
     const unknown = await app.inject({
       method: 'POST',

@@ -12,7 +12,7 @@ export type Workspace = 'Trade' | 'Strategy' | 'Funding Rates' | 'Portfolio' | '
 export type NavigationLabel = Workspace | 'Boros by Pendle';
 export type StrategyKind = StrategyConfig['kind'];
 export type FundingMetric = 'Per interval' | 'APR' | '24h' | '7d' | '30d';
-export type FundingSortKey = 'asset' | 'oi' | 'arb' | 'average' | 'gate' | 'binance' | 'okx' | 'bybit' | 'kraken' | 'hyperliquid' | 'deribit';
+export type FundingSortKey = 'asset' | 'oi' | 'arb' | 'average' | 'gate' | 'binance' | 'okx' | 'bybit' | 'kraken' | 'hyperliquid' | 'deribit' | 'lighter';
 export type SortDirection = 'asc' | 'desc';
 
 export interface PairedPositionPrefill {
@@ -109,6 +109,18 @@ export const exchanges = [
   { id: 'deribit', name: 'Deribit', short: 'DR' },
 ] as const satisfies ReadonlyArray<{ id: ExchangeLogoId; name: string; short: string }>;
 
+/** Funding can observe public venues that are intentionally absent from the CrossEx trading list. */
+export const fundingExchanges = [
+  ...exchanges,
+  { id: 'lighter', name: 'Lighter', short: 'LT' },
+] as const;
+export type FundingVenueId = (typeof fundingExchanges)[number]['id'];
+
+/** Only CrossEx venues may flow into the existing paired execution strategy. */
+export function isExecutableFundingVenue(id: FundingVenueId): id is ExchangeLogoId {
+  return id !== 'lighter';
+}
+
 export const FUNDING_VENUE_COLORS: Record<string, string> = {
   GATE: '#18d6ad',
   BINANCE: '#f0b83f',
@@ -121,8 +133,7 @@ export const FUNDING_VENUE_COLORS: Record<string, string> = {
 };
 
 export function fundingVenueName(venue: string): string {
-  if (venue.toUpperCase() === 'LIGHTER') return 'Lighter';
-  return exchanges.find((entry) => entry.id === venue.toLowerCase())?.name ?? venue;
+  return fundingExchanges.find((entry) => entry.id === venue.toLowerCase())?.name ?? venue;
 }
 
 export function streamedAssets(snapshot: MarketSnapshot | null): string[] {

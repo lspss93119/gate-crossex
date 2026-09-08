@@ -15,6 +15,7 @@ import { PublicMarketDataError, type PublicMarketDataGateway } from '@gate-cross
 import { reconcilePortfolioSnapshots, stalePortfolioReconciliation } from '@gate-crossex/domain';
 import {
   CROSSEX_VENUES,
+  EXTERNAL_VENUES,
   SupportedFutureSymbolSchema,
   BorosUpstreamMarketFeesResponseSchema,
   BorosUpstreamStrategiesResponseSchema,
@@ -123,6 +124,10 @@ const BOROS_STRATEGIES_CACHE_MS = 30_000;
 
 const CATALOG_VENUES = CROSSEX_VENUES;
 const QUOTE_PREFERENCE = ['USDT', 'USDC', 'USD'] as const;
+
+function isExternalFundingSymbol(symbol: string): boolean {
+  return EXTERNAL_VENUES.some((venue) => symbol.startsWith(`${venue}_FUTURE_`));
+}
 const CROSSEX_FUTURE_SYMBOL = /^(GATE|BINANCE|OKX|BYBIT|KRAKEN|HYPERLIQUID|DERIBIT)_FUTURE_([A-Z0-9]+)_(USDT|USDC|USD)$/;
 const STRATEGY_ID = /^(AUTO|PAIR|PREM|CLOSE)-[A-Z0-9]{8}$/;
 const FundingHistoryRequestSchema = z.object({
@@ -917,6 +922,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   const fundingHistoryService = new FundingHistoryService(database, publicMarketGateway, {
     warn: (symbol, reason) => app.log.warn({ symbol, reason }, 'funding history fetch failed'),
   });
+  const fundingSymbolsAreKnown = async (symbols: readonly string[], catalog: DerivedMarketCatalog): Promise<boolean> => {
+    if (symbols.some((symbol) => !catalog.liveSymbols.has(symbol) && isExternalFundingSymbol(symbol))) {
+      await fundingOverviewService.ensureFresh();
+    }
+    return symbols.every((symbol) => catalog.liveSymbols.has(symbol) || fundingOverviewService.hasFundingSymbol(symbol));
+  };
 
   let portfolioRefreshInFlight: { generation: number; promise: Promise<LivePortfolioSnapshot> } | null = null;
   const refreshPortfolio = (): Promise<LivePortfolioSnapshot> => {
@@ -1972,7 +1983,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       }
     }
     if (!catalog) return reply.code(502).send({ error: 'market_catalog_unavailable' });
-    if (parsed.data.symbols.some((symbol) => !catalog?.liveSymbols.has(symbol))) {
+    if (!(await fundingSymbolsAreKnown(parsed.data.symbols, catalog))) {
       return reply.code(404).send({ error: 'unknown_market_symbol' });
     }
     return fundingHistoryService.loadCachedMany(
@@ -2001,7 +2012,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       }
     }
     if (!catalog) return reply.code(502).send({ error: 'market_catalog_unavailable' });
-    if (parsed.data.symbols.some((symbol) => !catalog?.liveSymbols.has(symbol))) {
+    if (!(await fundingSymbolsAreKnown(parsed.data.symbols, catalog))) {
       return reply.code(404).send({ error: 'unknown_market_symbol' });
     }
     return fundingHistoryService.loadRankingSnapshot(
@@ -2030,7 +2041,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       }
     }
     if (!catalog) return reply.code(502).send({ error: 'market_catalog_unavailable' });
-    if (parsed.data.symbols.some((symbol) => !catalog?.liveSymbols.has(symbol))) {
+    if (!(await fundingSymbolsAreKnown(parsed.data.symbols, catalog))) {
       return reply.code(404).send({ error: 'unknown_market_symbol' });
     }
     return await fundingHistoryService.loadSeries(

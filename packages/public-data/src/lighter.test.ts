@@ -62,12 +62,15 @@ describe('Lighter public funding', () => {
     const { client, urls, sleep } = clientFor((url) => {
       expect(url.searchParams.get('market_id')).toBe('1');
       expect(url.searchParams.get('resolution')).toBe('1h');
-      expect(url.searchParams.get('count_back')).toBe('0');
+      expect(url.searchParams.get('count_back')).toBe('100');
       const from = Number(url.searchParams.get('start_timestamp'));
       const to = Number(url.searchParams.get('end_timestamp'));
-      expect(to - from).toBeLessThanOrEqual(500 * 3600 + 1);
+      expect(Number.isInteger(from)).toBe(true);
+      expect(Number.isInteger(to)).toBe(true);
+      expect(to - from).toBeLessThanOrEqual(99 * 3600 + 1);
       const rows = settlements.filter((row) => row.timestamp > from && row.timestamp < to);
-      return json({ code: 200, resolution: '1h', fundings: [...rows, ...rows.slice(0, 1), settlements[0],
+      const pageRows = rows.length === 99 ? [...rows, rows.at(-1)] : rows;
+      return json({ code: 200, resolution: '1h', fundings: [...pageRows, settlements[0],
         { timestamp: (end + HOUR) / 1000, value: '1', rate: '0.1', direction: 'long' }].reverse() });
     });
     const points = await client.queryFundingHistory('LIGHTER_FUTURE_BTC_USDC', start, end);
@@ -75,8 +78,52 @@ describe('Lighter public funding', () => {
     expect(points[0]).toEqual({ timestamp: start + HOUR, rate: '-0.000012' });
     expect(points.at(-1)).toEqual({ timestamp: end, rate: '0.000012' });
     expect(points.every((point, i) => i === 0 || point.timestamp > points[i - 1]!.timestamp)).toBe(true);
-    expect(urls.filter((url) => url.pathname.endsWith('/fundings'))).toHaveLength(2);
+    expect(urls.filter((url) => url.pathname.endsWith('/fundings'))).toHaveLength(8);
     expect(sleep).toHaveBeenCalledWith(1500, undefined);
+  });
+
+  it('continues after a full conservative page instead of treating the page limit as complete history', async () => {
+    const end = Math.floor(NOW / HOUR) * HOUR;
+    const start = end - 198 * HOUR;
+    const settlements = Array.from({ length: 199 }, (_, i) => ({ timestamp: (start + i * HOUR) / 1000,
+      value: '0.96000000', rate: '0.0012', direction: 'long' as const }));
+    const { client, urls } = clientFor((url) => {
+      const from = Number(url.searchParams.get('start_timestamp'));
+      const to = Number(url.searchParams.get('end_timestamp'));
+      const rows = settlements.filter((row) => row.timestamp > from && row.timestamp < to);
+      const fullPage = rows.length >= 99 ? [...rows.slice(0, 99), rows[98]] : rows;
+      return json({ code: 200, resolution: '1h', fundings: fullPage });
+    });
+
+    const points = await client.queryFundingHistory('LIGHTER_FUTURE_BTC_USDC', start, end);
+
+    expect(points).toHaveLength(198);
+    expect(urls.filter((url) => url.pathname.endsWith('/fundings'))).toHaveLength(2);
+  });
+
+  it('rejects a nonempty page that stops before the requested time boundary', async () => {
+    const end = Math.floor(NOW / HOUR) * HOUR;
+    const start = end - 10 * HOUR;
+    const { client } = clientFor(() => json({ code: 200, resolution: '1h', fundings: [{
+      timestamp: (start + HOUR) / 1000, value: '0.96', rate: '0.0012', direction: 'long',
+    }] }));
+
+    await expect(client.queryFundingHistory('LIGHTER_FUTURE_BTC_USDC', start, end))
+      .rejects.toMatchObject({ code: 'INCOMPLETE_HISTORY' });
+  });
+
+  it('fails closed when a full page cannot be continued to a covered boundary', async () => {
+    const end = Math.floor(NOW / HOUR) * HOUR;
+    const start = end - 198 * HOUR;
+    const fullPage = [...Array.from({ length: 99 }, (_, i) => ({
+      timestamp: (start + i * HOUR) / 1000, value: '0.96', rate: '0.0012', direction: 'long' as const,
+    })), { timestamp: (start + 98 * HOUR) / 1000, value: '0.96', rate: '0.0012', direction: 'long' as const }];
+    const { client } = clientFor((url) => Number(url.searchParams.get('start_timestamp')) === start / 1000
+      ? json({ code: 200, resolution: '1h', fundings: fullPage })
+      : json({ code: 200, resolution: '1h', fundings: [] }));
+
+    await expect(client.queryFundingHistory('LIGHTER_FUTURE_BTC_USDC', start, end))
+      .rejects.toMatchObject({ code: 'INCOMPLETE_HISTORY' });
   });
 
   it('returns a successful empty range without zero settlements', async () => {

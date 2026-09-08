@@ -68,7 +68,9 @@ const LighterHistorySchema = z.object({ code: z.literal(200), resolution: z.lite
   rate: z.string().regex(/^\d+(?:\.\d+)?$/), direction: z.enum(['long', 'short']),
 })).max(750) });
 const LIGHTER_HOUR_MS = 3_600_000;
-const LIGHTER_HISTORY_PAGE_MS = 500 * LIGHTER_HOUR_MS;
+const LIGHTER_HISTORY_PAGE_MS = 99 * LIGHTER_HOUR_MS;
+const LIGHTER_HISTORY_PAGE_LIMIT = 100;
+const LIGHTER_HISTORY_MAX_REQUESTS = 256;
 const LIGHTER_REQUEST_SPACING_MS = 1_500;
 const GateFundingRowSchema = z.object({
   contract: z.string(), funding_rate: numeric, mark_price: numeric,
@@ -932,10 +934,10 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
     const nextFundingAt = new Date((Math.floor(this.now() / LIGHTER_HOUR_MS) + 1) * LIGHTER_HOUR_MS).toISOString();
     return markets.map((market) => {
       const rate8h = rates.get(`${market.market_id}:${market.symbol}`);
-      const hourly = rate8h === undefined ? null : new Decimal(rate8h).div(8).toString();
+      const hourly = rate8h === undefined ? null : new Decimal(rate8h).div(8);
       return {
-        venue: 'LIGHTER', base: market.symbol, quote: 'USDC', fundingRate: hourly,
-        fundingIntervalHours: 1, fundingRate8h: hourly === null ? null : rateScaledTo8h(Number(hourly), 1),
+        venue: 'LIGHTER', base: market.symbol, quote: 'USDC', fundingRate: hourly?.toString() ?? null,
+        fundingIntervalHours: 1, fundingRate8h: hourly?.times(8).toString() ?? null,
         nextFundingAt, lastPrice: positiveNumberText(market.last_trade_price) ?? positiveNumberText(market.mark_price),
         openInterestValue: positiveProduct(finiteNumber(market.open_interest), finiteNumber(market.mark_price)),
         change24h: fractionFromPercent(market.daily_price_change),
@@ -963,17 +965,29 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
     if (endTime - startTime > 90 * 24 * LIGHTER_HOUR_MS || startTime < 0) throw new PublicMarketDataError('INVALID_TIME_RANGE');
     const market = await this.lighterMarket(symbol, signal);
     const points = new Map<number, string>();
-    for (let cursor = startTime; cursor < endTime; cursor += LIGHTER_HISTORY_PAGE_MS) {
+    let cursor = startTime;
+    let requests = 0;
+    let continuationPending = false;
+    while (cursor < endTime) {
+      requests += 1;
+      if (requests > LIGHTER_HISTORY_MAX_REQUESTS) throw new PublicMarketDataError('INCOMPLETE_HISTORY');
       const pageEnd = Math.min(endTime, cursor + LIGHTER_HISTORY_PAGE_MS);
       const query = new URLSearchParams({ market_id: String(market.market_id), resolution: '1h',
         start_timestamp: String(Math.floor(cursor / 1_000)),
         // The upstream end is exclusive; our gateway's end is inclusive.
-        end_timestamp: String(Math.floor(pageEnd / 1_000) + 1), count_back: '0' });
+        end_timestamp: String(Math.floor(pageEnd / 1_000) + 1), count_back: String(LIGHTER_HISTORY_PAGE_LIMIT) });
       const payload = parsePayload(LighterHistorySchema, await this.fetchLighter(`fundings?${query}`, signal));
-      if (payload.fundings.length >= 750) throw new PublicMarketDataError('INCOMPLETE_HISTORY');
-      for (const row of payload.fundings) {
+      const rows = [...payload.fundings].sort((left, right) => left.timestamp - right.timestamp);
+      const normalizedRows = rows.map((row) => {
         const timestamp = row.timestamp * 1_000;
         if (!Number.isSafeInteger(timestamp)) throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
+        return { row, timestamp };
+      });
+      const latestRelevantTimestamp = normalizedRows.reduce<number | null>((latest, current) => {
+        if (current.timestamp <= cursor || current.timestamp > pageEnd) return latest;
+        return latest === null ? current.timestamp : Math.max(latest, current.timestamp);
+      }, null);
+      for (const { row, timestamp } of normalizedRows) {
         if (timestamp <= cursor || timestamp > pageEnd) continue;
         // History publishes a percent magnitude and the paying side. Preserve the signed
         // fractional settlement with decimal arithmetic, never substitute funding value/USD.
@@ -982,6 +996,24 @@ export class VenuePublicMarketDataClient implements PublicMarketDataGateway {
         const text = rate.toString();
         if (points.has(timestamp) && points.get(timestamp) !== text) throw new PublicMarketDataError('INVALID_RESPONSE_SCHEMA');
         points.set(timestamp, text);
+      }
+      // count_back is the upstream page cap. A short response or a response reaching the
+      // requested end proves this window is covered; otherwise continue from the last observed
+      // timestamp rather than silently accepting a truncated full page.
+      const coverageBoundary = Math.floor(pageEnd / LIGHTER_HOUR_MS) * LIGHTER_HOUR_MS;
+      if (rows.length === 0) {
+        if (continuationPending) throw new PublicMarketDataError('INCOMPLETE_HISTORY');
+        cursor = pageEnd;
+      } else if (latestRelevantTimestamp === null) {
+        throw new PublicMarketDataError('INCOMPLETE_HISTORY');
+      } else if (latestRelevantTimestamp >= coverageBoundary) {
+        cursor = pageEnd;
+        continuationPending = false;
+      } else if (rows.length >= LIGHTER_HISTORY_PAGE_LIMIT && latestRelevantTimestamp > cursor) {
+        cursor = latestRelevantTimestamp;
+        continuationPending = true;
+      } else {
+        throw new PublicMarketDataError('INCOMPLETE_HISTORY');
       }
     }
     return [...points].sort(([a], [b]) => a - b).map(([timestamp, rate]) => ({ timestamp, rate }));
