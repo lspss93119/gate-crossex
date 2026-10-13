@@ -4,6 +4,23 @@ export type Language = 'en' | 'zh';
 export type Theme = 'dark' | 'light';
 
 const chinese: Record<string, string> = {
+  'Flash Swap': '闪兑', 'Quotes only': '仅询价', 'USD amount': 'USD 金额',
+  'Request quote': '获取报价', 'Requesting quote…': '正在询价…', 'You receive': '预计收到', 'You sell': '卖出金额', 'Quoted rate': '报价汇率',
+  'Quotes only. Conversion is not enabled.': '目前仅提供询价，尚未启用实际兑换。',
+  'Enter a USD amount and request a quote.': '输入 USD 金额后获取兑换报价。',
+  'Request a new quote to refresh the rate.': '重新询价可更新兑换汇率。',
+  'Manual quotes. Gate allows up to 100 quote requests per day.': '手动询价。Gate 每天最多允许 100 次报价请求。',
+  'Kraken USD conversion requires cross-exchange account mode.': 'Kraken USD 兑换需要跨交易所账户模式。',
+  'Enter a positive USD amount with at most 16 decimal places.': '请输入大于零、最多 16 位小数的 USD 金额。',
+  'The amount exceeds your available Kraken USD balance.': '金额超过当前可用的 Kraken USD 余额。',
+  'Your available Kraken USD balance could not be verified.': '暂时无法核对可用的 Kraken USD 余额。',
+  'The active account changed. Refresh account data and request a new quote.': '当前账户已变更，请刷新账户资料后重新询价。',
+  'Quotes are unavailable. Check your account connection and try again.': '报价暂不可用，请检查账户连接后重试。',
+  'Gate returned an inconsistent quote. Request a new quote.': 'Gate 返回的报价资料不一致，请重新询价。',
+  'The quote request timed out. Request a new quote.': '询价请求超时，请重新询价。',
+  'Quote request limit reached. Try again later.': '已达到询价请求限制，请稍后重试。',
+  'A quote request is already running for this account. Wait for it to finish.': '当前账户已有询价请求进行中，请等待其完成。',
+  'The quote request failed. Check your API permissions and try again.': '询价失败，请检查 API 权限后重试。',
   Trade: '交易', Strategy: '策略', 'Funding Rates': '资金费率', Portfolio: '资产', Settings: '设置', 'Main navigation': '主导航', More: '更多', 'More tools': '更多工具',
   'Trading fee comparison': '交易手续费查询', 'Compare account fees by ticker': '按代币对比账户费率',
   'Trading tools': '交易工具', 'Enter a ticker to compare fees and estimated costs across every exchange that supports its perpetual contract.': '输入代币代码，对比所有支持该永续合约的交易所费率和预估成本。',

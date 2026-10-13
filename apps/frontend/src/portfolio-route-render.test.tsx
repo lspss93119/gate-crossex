@@ -34,6 +34,24 @@ function portfolio(): AuthenticatedPortfolioSnapshot {
 }
 
 describe('portfolio risk rendering', () => {
+  it('adds a quote-only USD conversion card alongside the existing transfer form', () => {
+    const current = portfolio();
+    current.snapshot.balances = [{ venue: 'KRAKEN', coin: 'USD', balance: '1000', availableBalance: '100', equity: '1000', unrealizedPnl: '0',
+      futuresInitialMargin: '0', futuresMaintenanceMargin: '0', borrowingInitialMargin: '0', borrowingMaintenanceMargin: '0', liability: '0' }];
+    const html = renderToStaticMarkup(
+      <LanguageContext.Provider value={{ language: 'en', theme: 'dark', t: (key) => key, setLanguage: vi.fn() }}>
+        <PortfolioView tradingSnapshot={null} balances={{}} portfolio={current} accountStream={null}
+          tradingMode="readonly" credentialProfileId="gate-crossex-default" onOpenModeDialog={vi.fn()}
+          onRefresh={vi.fn(async () => undefined)} />
+      </LanguageContext.Provider>,
+    );
+    expect(html).toContain('Flash Swap');
+    expect(html).toContain('100 USD');
+    expect(html).toContain('Quotes only');
+    expect(html).toContain('Transfer funds');
+    expect(html).not.toContain('Confirm conversion');
+  });
+
   it('renders both account-wide rates, their explanations, and the compact ADL signal', () => {
     const html = renderToStaticMarkup(
       <LanguageContext.Provider value={{ language: 'en', theme: 'dark', t: (key) => key, setLanguage: vi.fn() }}>

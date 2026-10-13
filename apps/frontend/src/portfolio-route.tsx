@@ -34,6 +34,7 @@ import { marginRatePercent } from './portfolio-metrics.js';
 import { PositionsTable } from './positions-table.js';
 import type { PositionTableRow } from './strategy-positions.js';
 import { PositionCloseDialog, type ClosePositionTarget } from './position-close-dialog.js';
+import { FlashSwapCard } from './flash-swap-card.js';
 
 function VenueFromCode({ code }: { code: string }) {
   const exchange = exchanges.find((item) => item.id === code.toLowerCase());
@@ -61,6 +62,8 @@ interface PortfolioViewProps {
   portfolio: AuthenticatedPortfolioSnapshot | null;
   accountStream: PrivateStreamStatus | null;
   tradingMode: TradingMode | null;
+  credentialProfileId?: string | null;
+  credentialGeneration?: number;
   onOpenModeDialog: () => void;
   onRefresh: () => Promise<void>;
 }
@@ -90,7 +93,7 @@ const TRANSFER_ROUTE_MESSAGES: Record<CrossExTransferRouteError, string> = {
   INVALID_ISOLATED_TRANSFER_ROUTE: 'Choose a valid isolated CrossEx transfer route.',
 };
 
-export function PortfolioView({ tradingSnapshot, balances, portfolio, accountStream, tradingMode, onOpenModeDialog, onRefresh }: PortfolioViewProps) {
+export function PortfolioView({ tradingSnapshot, balances, portfolio, accountStream, tradingMode, credentialProfileId = null, credentialGeneration = 0, onOpenModeDialog, onRefresh }: PortfolioViewProps) {
   const { language, t } = useLanguage();
   const [tab, setTab] = useState<PortfolioTab>('positions');
   const [tablePages, setTablePages] = useState({ openOrders: 1, tradeHistory: 1, margin: 1 });
@@ -739,6 +742,11 @@ export function PortfolioView({ tradingSnapshot, balances, portfolio, accountStr
         </div>
       </article>
     </section>
+
+    <FlashSwapCard key={`${credentialProfileId}:${credentialGeneration}:${account?.accountMode}`}
+      profileId={credentialProfileId} accountMode={account?.accountMode}
+      availableUsd={(Object.values(balances).find((balance) => balance.venue === 'KRAKEN' && balance.coin === 'USD')
+        ?? snapshot?.balances.find((balance) => balance.venue === 'KRAKEN' && balance.coin === 'USD'))?.availableBalance ?? null} />
 
     <section className="portfolio-operations">
       <article className="transfer-card terminal-panel">

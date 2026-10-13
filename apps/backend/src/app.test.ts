@@ -534,6 +534,175 @@ afterEach(async () => {
   }
 });
 
+describe('Kraken USD flash-swap quotes', () => {
+  const headers = { host: '127.0.0.1:17840', 'x-gct-read-intent': 'convert-quote' };
+  const payload = { profileId: DEFAULT_CREDENTIAL_PROFILE, fromAmount: '25.0000000000000001' };
+  const quote = {
+    quote_id: 'quote-1', valid_ms: '5000', from_coin: 'KRAKEN_USD', to_coin: 'CROSSEX_USDT',
+    from_amount: payload.fromAmount, to_amount: '24.975', price: '0.999',
+  };
+  const account = {
+    ...accountFixture,
+    assets: [{ ...accountFixture.assets[0]!, coin: 'USD', exchange_type: 'KRAKEN',
+      balance: '1000', equity: '1000', available_balance: '100' }],
+  };
+
+  async function setup() {
+    const context = await createTestApp();
+    await context.vault.set(DEFAULT_CREDENTIAL_PROFILE, { apiKey: 'test-key', apiSecret: 'test-secret' });
+    vi.spyOn(context.gateway, 'queryAccount').mockResolvedValue(account);
+    const quotes = vi.fn(async () => quote);
+    Object.assign(context.gateway, { queryConvertQuote: quotes });
+    return { ...context, quotes };
+  }
+
+  it('returns a quote in readonly mode without submitting any orders or transfers', async () => {
+    const { app, gateway, tradingSession, quotes } = await setup();
+    const response = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      quoteId: 'quote-1', profileId: DEFAULT_CREDENTIAL_PROFILE, executionEnabled: false,
+      fromCoin: 'KRAKEN_USD', toCoin: 'CROSSEX_USDT', fromAmount: payload.fromAmount,
+      toAmount: '24.975', price: '0.999', validMs: '5000',
+    });
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(quotes).toHaveBeenCalledExactlyOnceWith({ apiKey: 'test-key', apiSecret: 'test-secret' }, {
+      exchange_type: 'KRAKEN', from_coin: 'KRAKEN_USD', to_coin: 'CROSSEX_USDT', from_amount: payload.fromAmount,
+    }, expect.any(Function));
+    expect(gateway.createdOrders).toEqual([]);
+    expect(gateway.createdTransfers).toEqual([]);
+    expect(tradingSession.liveTradingEnabled).toBe(false);
+  });
+
+  it('requires explicit intent, credentials, and the expected active account', async () => {
+    const { app, quotes, vault } = await setup();
+    const missingIntent = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers: { host: headers.host }, payload });
+    expect(missingIntent.statusCode).toBe(403);
+    const staleAccount = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload: { ...payload, profileId: SECONDARY_PROFILE_ID } });
+    expect(staleAccount.statusCode).toBe(409);
+    expect(staleAccount.json()).toEqual({ error: 'credential_changed' });
+    await vault.delete(DEFAULT_CREDENTIAL_PROFILE);
+    const missingCredentials = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    expect(missingCredentials.statusCode).toBe(409);
+    expect(quotes).not.toHaveBeenCalled();
+  });
+
+  it('rejects extra route parameters and uses available USD rather than total balance', async () => {
+    const { app, quotes } = await setup();
+    const otherRoute = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload: { ...payload, toCoin: 'BTC' } });
+    expect(otherRoute.statusCode).toBe(400);
+    const unavailable = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload: { ...payload, fromAmount: '101' } });
+    expect(unavailable.statusCode).toBe(400);
+    expect(unavailable.json()).toEqual({ error: 'convert_amount_exceeds_available' });
+    expect(quotes).not.toHaveBeenCalled();
+  });
+
+  it('rejects isolated exchange mode before asking Gate for a quote', async () => {
+    const { app, gateway, quotes } = await setup();
+    vi.mocked(gateway.queryAccount).mockResolvedValue({ ...account, account_mode: 'ISOLATED_EXCHANGE' });
+    const response = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'convert_account_mode_unsupported' });
+    expect(quotes).not.toHaveBeenCalled();
+  });
+
+  it('rejects absent source balance and mismatched quote amounts', async () => {
+    const { app, gateway, quotes } = await setup();
+    vi.mocked(gateway.queryAccount).mockResolvedValueOnce({ ...account, assets: [] });
+    const missing = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    expect(missing.statusCode).toBe(409);
+    expect(quotes).not.toHaveBeenCalled();
+    quotes.mockResolvedValueOnce({ ...quote, from_amount: '50' });
+    const mismatched = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    expect(mismatched.statusCode).toBe(502);
+    expect(mismatched.json()).toEqual({ error: 'invalid_convert_quote_response' });
+  });
+
+  it('discards quotes returned after an account switch', async () => {
+    const context = await setup();
+    await addSecondaryProfile(context);
+    let release!: (value: typeof quote) => void;
+    context.quotes.mockImplementationOnce(() => new Promise((resolveQuote) => { release = resolveQuote; }));
+    const pending = context.app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    await vi.waitFor(() => expect(context.quotes).toHaveBeenCalledTimes(1));
+    const switched = await context.app.inject({ method: 'POST', url: `/api/onboarding/accounts/${SECONDARY_PROFILE_ID}/activate`, headers: { host: headers.host, 'x-gct-credential-intent': 'switch-account' }, payload: {} });
+    expect(switched.statusCode).toBe(200);
+    release(quote);
+    const result = await pending;
+    expect(result.statusCode).toBe(409);
+    expect(result.json()).toEqual({ error: 'credential_changed' });
+  });
+
+  it('preserves Gate rate limits without retrying or exposing credentials', async () => {
+    const { app, quotes } = await setup();
+    quotes.mockRejectedValueOnce(new GateApiError(429, 'TOO_MANY_REQUESTS', 2_000));
+    const response = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    expect(response.statusCode).toBe(429);
+    expect(response.headers['retry-after']).toBe('2');
+    expect(response.json()).toEqual({ error: 'convert_quote_rejected', label: 'TOO_MANY_REQUESTS' });
+    expect(quotes).toHaveBeenCalledTimes(1);
+    expect(response.body).not.toContain('test-secret');
+  });
+
+  it('has no executable conversion endpoint even in live mode', async () => {
+    const { app, gateway } = await createTestApp({ liveTradingEnabled: true });
+    const response = await app.inject({ method: 'POST', url: '/api/crossex/convert/orders', headers: { ...headers, 'x-gct-trading-intent': 'convert-funds' }, payload: { quote_id: 'quote-1' } });
+    expect(response.statusCode).toBe(404);
+    expect(gateway.createdOrders).toEqual([]);
+    expect(gateway.createdTransfers).toEqual([]);
+  });
+
+  it('keeps one quote in flight per account until it settles', async () => {
+    const { app, quotes } = await setup();
+    let release!: (value: typeof quote) => void;
+    quotes.mockImplementationOnce(() => new Promise((resolveQuote) => { release = resolveQuote; }));
+    const first = app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    await vi.waitFor(() => expect(quotes).toHaveBeenCalledTimes(1));
+    const second = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    release(quote);
+    expect((await first).statusCode).toBe(200);
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: 'convert_quote_in_progress' });
+    expect(quotes).toHaveBeenCalledTimes(1);
+    const next = await app.inject({ method: 'POST', url: '/api/crossex/convert/quote', headers, payload });
+    expect(next.statusCode).toBe(200);
+    expect(quotes).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not ask for a quote after the browser abandons its account lookup', async () => {
+    const { app, gateway, quotes } = await setup();
+    let release!: (value: typeof account) => void;
+    vi.mocked(gateway.queryAccount).mockImplementationOnce(() => new Promise((resolveAccount) => { release = resolveAccount; }));
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const abort = new AbortController();
+    const pending = fetch(`${address}/api/crossex/convert/quote`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-gct-read-intent': 'convert-quote' },
+      body: JSON.stringify(payload), signal: abort.signal,
+    });
+    await vi.waitFor(() => expect(gateway.queryAccount).toHaveBeenCalledTimes(1));
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await new Promise((resolveTurn) => setTimeout(resolveTurn, 20));
+    release(account);
+    await new Promise((resolveTurn) => setTimeout(resolveTurn, 20));
+    expect(quotes).not.toHaveBeenCalled();
+  });
+
+  it('changes the credential version on account switches but not ordinary verification', async () => {
+    const context = await setup();
+    const before = await context.app.inject({ method: 'GET', url: '/api/onboarding/connection', headers });
+    expect(before.json().credentialGeneration).toBe(0);
+    const verification = await context.app.inject({ method: 'GET', url: '/api/crossex/account-summary', headers: { ...headers, 'x-gct-read-intent': 'account-summary' } });
+    expect(verification.statusCode).toBe(200);
+    const refreshed = await context.app.inject({ method: 'GET', url: '/api/onboarding/connection', headers });
+    expect(refreshed.json().credentialGeneration).toBe(0);
+    await addSecondaryProfile(context);
+    const switched = await context.app.inject({ method: 'POST', url: `/api/onboarding/accounts/${SECONDARY_PROFILE_ID}/activate`, headers: { host: headers.host, 'x-gct-credential-intent': 'switch-account' }, payload: {} });
+    expect(switched.statusCode).toBe(200);
+    expect(switched.json().credentialGeneration).toBe(1);
+  });
+});
+
 describe('local backend', () => {
   it('starts and stops the public Lighter feed without widening CrossEx browser markets', async () => {
     const lighterMarketFeed = new FakeLighterMarketFeed();

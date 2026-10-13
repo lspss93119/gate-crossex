@@ -533,6 +533,8 @@ function App() {
   const [tradingMode, setTradingMode] = useState<TradingMode | null>(null);
   const [modeDialogOpen, setModeDialogOpen] = useState(false);
   const [connection, setConnection] = useState<CredentialConnectionStatus | null>(null);
+  const connectionRef = useRef<CredentialConnectionStatus | null>(null);
+  const accountContextEpochRef = useRef(0);
   const [editingAccountName, setEditingAccountName] = useState(false);
   const [accountNameDraft, setAccountNameDraft] = useState('');
   const [accountRenameSaving, setAccountRenameSaving] = useState(false);
@@ -577,11 +579,23 @@ function App() {
       markBackendUnavailable();
     }
   }, [markBackendUnavailable]);
-  const refreshConnection = useCallback(async () => {
-    const next = await api.connection();
+  const updateConnection = useCallback((next: CredentialConnectionStatus) => {
+    const current = connectionRef.current;
+    if (!current || current.configured !== next.configured
+      || current.activeProfileId !== next.activeProfileId
+      || current.credentialGeneration !== next.credentialGeneration) {
+      accountContextEpochRef.current += 1;
+    }
+    connectionRef.current = next;
     setConnection(next);
-    return next;
   }, []);
+  const refreshConnection = useCallback(async () => {
+    const epoch = accountContextEpochRef.current;
+    const next = await api.connection(new AbortController().signal);
+    if (epoch !== accountContextEpochRef.current) return connectionRef.current ?? next;
+    updateConnection(next);
+    return next;
+  }, [updateConnection]);
 
   useEffect(() => {
     if (backendUnavailableSince === null) {
@@ -670,11 +684,13 @@ function App() {
   const refreshPositions = useCallback(async () => {
     setTradingSnapshot(await api.positionsSnapshot());
   }, []);
-  async function refreshAuthenticatedPortfolio() {
-    const next = await api.portfolioSnapshot();
+  const refreshAuthenticatedPortfolio = useCallback(async () => {
+    const epoch = accountContextEpochRef.current;
+    const next = await api.portfolioSnapshot(new AbortController().signal);
+    if (epoch !== accountContextEpochRef.current) return;
     setAuthenticatedPortfolio(next);
     if (next.live?.stream) setAccountStream(next.live.stream);
-  }
+  }, []);
   const refreshStrategies = useCallback(async () => {
     setStrategies((await api.strategies()).strategies);
   }, []);
@@ -772,6 +788,33 @@ function App() {
   }, [workspace, refreshTrading, refreshFees, reportBackendConnectivityError]);
 
   const terminalStreamEnabled = workspace !== 'Funding Rates';
+  useEffect(() => {
+    if (workspace !== 'Portfolio') return;
+    let active = true;
+    const epoch = accountContextEpochRef.current;
+    const controller = new AbortController();
+    // The quote card needs the active account on first entry, even before Settings or
+    // a window-focus refresh. These are existing read-only account/snapshot endpoints.
+    void api.connection(controller.signal).then((status) => {
+      if (!active || epoch !== accountContextEpochRef.current) return;
+      updateConnection(status);
+    }).catch(reportBackendConnectivityError);
+    return () => { active = false; controller.abort(); };
+  }, [workspace, updateConnection, reportBackendConnectivityError]);
+
+  useEffect(() => {
+    if (workspace !== 'Portfolio' || !connection?.configured) return;
+    let active = true;
+    const epoch = accountContextEpochRef.current;
+    const controller = new AbortController();
+    void api.portfolioSnapshot(controller.signal).then((next) => {
+      if (!active || epoch !== accountContextEpochRef.current) return;
+      setAuthenticatedPortfolio(next);
+      if (next.live?.stream) setAccountStream(next.live.stream);
+    }).catch(reportBackendConnectivityError);
+    return () => { active = false; controller.abort(); };
+  }, [workspace, connection?.configured, connection?.activeProfileId, connection?.credentialGeneration, reportBackendConnectivityError]);
+
   useEffect(() => {
     if (!terminalStreamEnabled) return;
     const handle = connectTerminalStream((message) => {
@@ -1069,11 +1112,11 @@ function App() {
     if (workspace === 'Funding Rates') return fundingDetailAsset
       ? <FundingDetailView asset={fundingDetailAsset} fundingOverview={fundingOverview} onFundingOverview={setFundingOverview} onBack={() => navigate({ workspace: 'Funding Rates', asset: null })} />
       : <FundingRatesView metric={fundingMetric} onMetricChange={setFundingMetric} marketSnapshot={marketSnapshot} onMarketFallback={refreshMarketSnapshot} onOpenAsset={openFundingDetail} onOpenStrategy={openFundingStrategy} fundingOverview={fundingOverview} onFundingOverview={setFundingOverview} fundingHistoryCache={fundingHistoryCache} onFundingHistoryEntries={mergeFundingHistory} />;
-    if (workspace === 'Portfolio') return <PortfolioView key={connection?.activeProfileId ?? 'no-active-account'} tradingSnapshot={tradingSnapshot} balances={balances} portfolio={authenticatedPortfolio} accountStream={accountStream} tradingMode={tradingMode} onOpenModeDialog={openModeDialog} onRefresh={refreshAuthenticatedPortfolio} />;
+    if (workspace === 'Portfolio') return <PortfolioView key={connection?.activeProfileId ?? 'no-active-account'} tradingSnapshot={tradingSnapshot} balances={balances} portfolio={authenticatedPortfolio} accountStream={accountStream} tradingMode={tradingMode} credentialProfileId={connection?.activeProfileId ?? null} credentialGeneration={connection?.credentialGeneration ?? 0} onOpenModeDialog={openModeDialog} onRefresh={refreshAuthenticatedPortfolio} />;
     if (workspace === 'Trading Fees') return <FeeComparisonView catalog={availableCatalog} marketSnapshot={marketSnapshot} favorites={favorites} fees={fees} feesReady={feesReady} error={feesError} onRefresh={refreshFees} />;
     return null;
 
-  }, [workspace, strategyKind, positionPrefill, selectedAsset, fundingMetric, fundingOverview, fundingHistoryCache, availableCatalog, selectAsset, marketSnapshot, tradingSnapshot, authenticatedPortfolio, accountStream, activeAccountStrategies, balances, fees, feesReady, feesError, orderBook, publicTrades, candleSeries, candleBackfilling, tradingMode, openModeDialog, watchMarket, watchQuotes, watchKlines, seedCandles, refreshTrading, refreshStrategies, refreshPositions, refreshMarketSnapshot, refreshFees, favorites, toggleFavorite, confirmOrders, fundingDetailAsset, openFundingDetail, openFundingStrategy, mergeFundingHistory, navigate, connection?.activeProfileId]);
+  }, [workspace, strategyKind, positionPrefill, selectedAsset, fundingMetric, fundingOverview, fundingHistoryCache, availableCatalog, selectAsset, marketSnapshot, tradingSnapshot, authenticatedPortfolio, accountStream, activeAccountStrategies, balances, fees, feesReady, feesError, orderBook, publicTrades, candleSeries, candleBackfilling, tradingMode, openModeDialog, watchMarket, watchQuotes, watchKlines, seedCandles, refreshTrading, refreshStrategies, refreshPositions, refreshAuthenticatedPortfolio, refreshMarketSnapshot, refreshFees, favorites, toggleFavorite, confirmOrders, fundingDetailAsset, openFundingDetail, openFundingStrategy, mergeFundingHistory, navigate, connection?.activeProfileId, connection?.credentialGeneration]);
 
   const storageLabel = connection?.storage === 'os_keychain' ? t('OS keychain') : connection?.storage === 'env_file' ? t('Local .env file') : connection?.storage ?? '—';
   const accountStatusLabel = accountStream?.state === 'live' ? t('Account live')
@@ -1083,11 +1126,11 @@ function App() {
   const accountStatusConnected = accountStream?.state === 'live';
 
   const applyAccountConnection = useCallback((next: CredentialConnectionStatus) => {
-    setConnection(next);
+    updateConnection(next);
     if (next.readOnly) {
       setTradingMode((current) => current === 'unset' ? current : 'readonly');
     }
-  }, []);
+  }, [updateConnection]);
 
   const beginAccountNameEdit = useCallback(() => {
     if (!connection?.activeProfileId || !connection.label) return;
@@ -1419,7 +1462,7 @@ function App() {
     {tradingMode !== null && (tradingMode === 'unset' || modeDialogOpen) && <TradingModeGate
       mode={tradingMode}
       credentialEntryPath={connection?.secureEntryPath ?? '/secure/credentials'}
-      onCredentialStatus={setConnection}
+      onCredentialStatus={updateConnection}
       onApplied={(mode) => {
         setTradingMode(mode);
         setConnection((current) => current ? { ...current, readOnly: mode !== 'live' } : current);

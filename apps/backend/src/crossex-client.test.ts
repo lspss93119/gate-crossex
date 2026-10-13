@@ -2,6 +2,52 @@ import { describe, expect, it, vi } from 'vitest';
 import { GateApiError, GateCrossExClient, signGateRequest } from './crossex-client.js';
 
 describe('Gate APIv4 signing', () => {
+  it('cancels a queued quote before it can spend an upstream request', async () => {
+    const paths: string[] = [];
+    let release!: (value: Response) => void;
+    const blocked = new Promise<Response>((resolveResponse) => { release = resolveResponse; });
+    const client = new GateCrossExClient(async (url) => {
+      paths.push(String(url));
+      return blocked;
+    }, Date.now, undefined, 0);
+    const credentials = { apiKey: 'test-key', apiSecret: 'test-secret' };
+    const account = client.queryAccount(credentials);
+    await vi.waitFor(() => expect(paths).toHaveLength(1));
+    let cancelled = false;
+    const quote = client.queryConvertQuote(credentials, {
+      exchange_type: 'KRAKEN', from_coin: 'KRAKEN_USD', to_coin: 'CROSSEX_USDT', from_amount: '25',
+    }, () => { if (cancelled) throw new GateApiError(0, 'REQUEST_CANCELLED'); });
+    const rejected = expect(quote).rejects.toMatchObject({ label: 'REQUEST_CANCELLED' });
+    cancelled = true;
+    release(new Response(JSON.stringify({ available_margin: '100', margin_balance: '100', initial_margin: '0', maintenance_margin: '0',
+      initial_margin_rate: '0', maintenance_margin_rate: '0', position_mode: 'SINGLE', account_mode: 'CROSS_EXCHANGE',
+      exchange_type: 'CROSSEX', update_time: '1783689000000', assets: [] })));
+    await account;
+    await rejected;
+    expect(paths).toEqual(['https://api.gateio.ws/api/v4/crossex/accounts']);
+  });
+
+  it('requests only the signed Kraken USD conversion quote and preserves decimal strings', async () => {
+    const received: Array<{ url: string; init?: RequestInit }> = [];
+    const fixture = { quote_id: 'quote-1', valid_ms: '5000', from_coin: 'KRAKEN_USD', to_coin: 'CROSSEX_USDT', from_amount: '25.0000000000000001', to_amount: '24.975', price: '0.999' };
+    const client = new GateCrossExClient(async (url, init) => {
+      received.push({ url: String(url), init });
+      return new Response(JSON.stringify(fixture));
+    }, () => 1_700_000_000_000, undefined, 0);
+    expect(client).toHaveProperty('queryConvertQuote');
+    const quote = await client.queryConvertQuote({ apiKey: 'test-key', apiSecret: 'test-secret' }, {
+      exchange_type: 'KRAKEN', from_coin: 'KRAKEN_USD', to_coin: 'CROSSEX_USDT', from_amount: '25.0000000000000001',
+    });
+    expect(quote).toEqual(fixture);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.url).toBe('https://api.gateio.ws/api/v4/crossex/convert/quote');
+    expect(received[0]?.init?.method).toBe('POST');
+    expect(received[0]?.init?.body).toBe('{"exchange_type":"KRAKEN","from_coin":"KRAKEN_USD","to_coin":"CROSSEX_USDT","from_amount":"25.0000000000000001"}');
+    const headers = new Headers(received[0]?.init?.headers);
+    expect(headers.get('SIGN')).toMatch(/^[a-f0-9]{128}$/);
+    expect(headers.get('X-Gate-Channel-Id')).toBeNull();
+  });
+
   it('uses the documented method, path, query, payload hash, and timestamp order', () => {
     expect(signGateRequest({
       method: 'GET',

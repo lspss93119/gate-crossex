@@ -6,6 +6,29 @@ afterEach(() => {
 });
 
 describe('local API request coordination', () => {
+  it('does not automatically spend another quote when Gate returns a rate limit', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: 'convert_quote_rejected', label: 'TOO_MANY_REQUESTS' }), { status: 429, headers: { 'Retry-After': '0' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(api).toHaveProperty('convertQuote');
+    await expect(api.convertQuote({ profileId: 'gate-crossex-default', fromAmount: '25' }))
+      .rejects.toMatchObject({ code: 'convert_quote_rejected', retryAfterMs: 1000 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('requests an account-bound conversion quote without an automatic retry', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: 'convert_quote_rejected' }), { status: 502 }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect(api).toHaveProperty('convertQuote');
+    await expect(api.convertQuote({ profileId: 'gate-crossex-default', fromAmount: '25.0000000000000001' }))
+      .rejects.toMatchObject({ status: 502, code: 'convert_quote_rejected' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0]! as unknown as [string, RequestInit];
+    expect(path).toBe('/api/crossex/convert/quote');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('x-gct-read-intent')).toBe('convert-quote');
+    expect(init.body).toBe('{"profileId":"gate-crossex-default","fromAmount":"25.0000000000000001"}');
+  });
+
   it('coalesces concurrent reads of the same execution snapshot', async () => {
     let release: ((response: Response) => void) | undefined;
     const response = new Promise<Response>((resolve) => { release = resolve; });
@@ -24,6 +47,20 @@ describe('local API request coordination', () => {
       { mode: 'live', orders: [], positions: [], fills: [], balances: [] },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps cancellable portfolio loads separate across account contexts', async () => {
+    const releases: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { releases.push(resolve); }));
+    vi.stubGlobal('fetch', fetchMock);
+    const first = api.portfolioSnapshot(new AbortController().signal).catch((error: ApiError) => error.code);
+    const second = api.portfolioSnapshot(new AbortController().signal).catch((error: ApiError) => error.code);
+    try {
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    } finally {
+      releases.forEach((release, index) => release(new Response(JSON.stringify({ error: index === 0 ? 'old_account' : 'new_account' }), { status: 409 })));
+    }
+    await expect(Promise.all([first, second])).resolves.toEqual(['old_account', 'new_account']);
   });
 
   it('preserves the upstream Gate label when a leverage update is rejected', async () => {

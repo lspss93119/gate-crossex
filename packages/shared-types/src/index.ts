@@ -60,6 +60,7 @@ export const CredentialConnectionStatusSchema = z.object({
   secureEntryPath: z.literal('/secure/credentials'),
   readOnly: z.boolean(),
   activeProfileId: z.string().nullable(),
+  credentialGeneration: z.number().int().nonnegative().optional(),
   profiles: z.array(z.object({
     id: z.string(),
     label: z.string(),
@@ -199,6 +200,32 @@ export const CrossExTransferAccountSchema = z.enum([
   'CROSSEX_DERIBIT',
 ]);
 export type CrossExTransferAccount = z.infer<typeof CrossExTransferAccountSchema>;
+
+// Keep quote amounts as decimal strings all the way through the browser and Gate boundary.
+const ConvertDecimalSchema = z.string().max(80).regex(/^\d+(?:\.\d+)?$/)
+  .refine((value) => /[1-9]/.test(value), 'amount must be positive');
+export const CrossExConvertQuoteRequestSchema = z.object({
+  profileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
+  fromAmount: z.string().trim().max(40).regex(/^\d+(?:\.\d{1,16})?$/)
+    .refine((value) => /[1-9]/.test(value), 'amount must be positive'),
+}).strict();
+export type CrossExConvertQuoteRequest = z.infer<typeof CrossExConvertQuoteRequestSchema>;
+
+export const CrossExConvertQuoteResponseSchema = z.object({
+  quoteId: z.string().min(1).max(128),
+  profileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
+  fromCoin: z.literal('KRAKEN_USD'),
+  toCoin: z.literal('CROSSEX_USDT'),
+  fromAmount: ConvertDecimalSchema,
+  toAmount: ConvertDecimalSchema,
+  price: ConvertDecimalSchema,
+  // Gate's documentation disagrees about duration vs timestamp. Preserve its raw value;
+  // this quote-only stage deliberately makes no claim about an executable expiry time.
+  validMs: z.string().regex(/^[1-9]\d{0,15}$/),
+  quotedAt: z.string().datetime(),
+  executionEnabled: z.literal(false),
+});
+export type CrossExConvertQuoteResponse = z.infer<typeof CrossExConvertQuoteResponseSchema>;
 
 const CrossExTransferAmountSchema = z.string().trim().min(1).max(40)
   .regex(/^\d+(?:\.\d+)?$/)

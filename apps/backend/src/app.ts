@@ -21,6 +21,7 @@ import {
   BorosUpstreamStrategiesResponseSchema,
   CrossExTransferAccountSchema,
   CrossExTransferRequestSchema,
+  CrossExConvertQuoteRequestSchema,
   canonicalizeCrossExTransfer,
   crossExTransferRouteError,
   UserPreferencesSchema,
@@ -67,6 +68,8 @@ import {
   type SelectableCredentialStorageProvider,
 } from './credential-vault.js';
 import { OneTimeCsrfTokens } from './csrf.js';
+import { ConvertQuoteError, queryKrakenUsdQuote } from './convert-service.js';
+import type { ConvertQuoteCrossExGateway } from './crossex-client.js';
 import { GateApiError, type GateCrossExAccount, type GateCrossExPortfolio, type GateCrossExPosition, type GateCrossExRiskLimit, type GateCrossExSymbol, type GateTransferRecord, type GateAccountBookRecord, type PortfolioOperationsCrossExGateway, type ReadOnlyCrossExGateway, type TradingCrossExGateway } from './crossex-client.js';
 import { CandleStore } from './candle-store.js';
 import { FundingHistoryService } from './funding-history.js';
@@ -1137,6 +1140,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       secureEntryPath: '/secure/credentials',
       readOnly: !tradingSession.liveTradingEnabled,
       activeProfileId: activeCredentialProfileId,
+      credentialGeneration,
       profiles: profiles.map((profile) => ({
         id: profile.id,
         label: profile.label,
@@ -2225,6 +2229,60 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       request.log.warn({ reason: error instanceof GateApiError ? error.label : 'LOCAL_CREDENTIAL_ERROR' }, 'fee rate refresh failed');
       if (feeCache) return { fees: feeCache.fees, fetchedAt: feeCache.fetchedAt, cacheStatus: 'stale' } satisfies VenueFeeRatesResponse;
       return reply.code(502).send({ error: 'fee_rates_unavailable' });
+    }
+  });
+
+  const quoteProfilesInFlight = new Set<string>();
+  app.post('/api/crossex/convert/quote', {
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    preHandler: async (request, reply) => {
+      reply.header('Cache-Control', 'no-store');
+      if (request.headers['x-gct-read-intent'] !== 'convert-quote') {
+        return reply.code(403).send({ error: 'missing_read_intent' });
+      }
+    },
+  }, async (request, reply) => {
+    const parsed = CrossExConvertQuoteRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_convert_quote' });
+    const quoteGateway = crossExGateway as Partial<ConvertQuoteCrossExGateway>;
+    if (!quoteGateway.queryConvertQuote) return reply.code(503).send({ error: 'convert_quotes_unavailable' });
+    const generation = credentialGeneration;
+    let disconnected = false;
+    let ownsQuoteLock = false;
+    const onResponseClose = () => { if (!reply.raw.writableFinished) disconnected = true; };
+    reply.raw.once('close', onResponseClose);
+    const assertCurrentAccount = () => {
+      if (disconnected) throw new ConvertQuoteError('convert_quote_cancelled', 499);
+      if (generation !== credentialGeneration || parsed.data.profileId !== activeCredentialProfileId) {
+        throw new TradingRuntimeError('credential_changed', 409);
+      }
+    };
+    let credentials: GateCredentials | null = null;
+    try {
+      assertCurrentAccount();
+      if (quoteProfilesInFlight.has(parsed.data.profileId)) throw new ConvertQuoteError('convert_quote_in_progress', 409);
+      quoteProfilesInFlight.add(parsed.data.profileId);
+      ownsQuoteLock = true;
+      credentials = await credentialVault.get(DEFAULT_CREDENTIAL_PROFILE);
+      assertCurrentAccount();
+      if (!credentials) throw new TradingRuntimeError('credential_not_configured', 409);
+      return await queryKrakenUsdQuote(quoteGateway as ConvertQuoteCrossExGateway, credentials, parsed.data, assertCurrentAccount);
+    } catch (error) {
+      if (error instanceof TradingRuntimeError) return reply.code(error.statusCode).send({ error: error.code });
+      if (error instanceof ConvertQuoteError) return reply.code(error.statusCode).send({ error: error.code });
+      if (error instanceof GateApiError) {
+        if (error.retryAfterMs !== undefined) {
+          reply.header('Retry-After', String(Math.max(1, Math.ceil(error.retryAfterMs / 1_000))));
+        }
+        const statusCode = error.statusCode === 429 ? 429 : error.statusCode >= 400 && error.statusCode < 500 ? 400 : 502;
+        return reply.code(statusCode).send({ error: 'convert_quote_rejected', label: error.label });
+      }
+      request.log.warn({ reason: 'LOCAL_CREDENTIAL_OR_QUOTE_ERROR' }, 'flash-swap quote failed');
+      return reply.code(502).send({ error: 'convert_quotes_unavailable' });
+    } finally {
+      reply.raw.off('close', onResponseClose);
+      if (ownsQuoteLock) quoteProfilesInFlight.delete(parsed.data.profileId);
+      credentials = null;
     }
   });
 

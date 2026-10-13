@@ -4,6 +4,8 @@ import {
   CandleSeriesResponseSchema,
   CredentialConnectionStatusSchema,
   CrossExPortfolioActivityResponseSchema,
+  CrossExConvertQuoteRequestSchema,
+  CrossExConvertQuoteResponseSchema,
   CrossExRiskLimitResponseSchema,
   CrossExTransferBalancesResponseSchema,
   CrossExTransferCoinsResponseSchema,
@@ -38,6 +40,8 @@ import {
   type CandleSeriesResponse,
   type CredentialConnectionStatus,
   type CrossExAccountBookRecord,
+  type CrossExConvertQuoteRequest,
+  type CrossExConvertQuoteResponse,
   type CrossExInstrument,
   type CrossExPortfolioActivityResponse,
   type CrossExRiskLimitResponse,
@@ -85,6 +89,8 @@ import {
 } from '@gate-crossex/shared-types';
 
 export type {
+  CrossExConvertQuoteRequest,
+  CrossExConvertQuoteResponse,
   AuthenticatedPortfolioSnapshot,
   BorosStrategy,
   BorosStrategyMarket,
@@ -247,7 +253,9 @@ async function requestOnce<T>(
 
 async function request<T>(schema: RuntimeSchema<T>, path: string, init?: RequestInit): Promise<T> {
   const read = isReadRequest(init);
-  if (!read) return requestOnce(schema, path, init, false);
+  // A caller-owned signal scopes the read to that caller's account context/lifetime.
+  // Sharing it could reuse an older account's result or cancel another caller's read.
+  if (!read || init?.signal) return requestOnce(schema, path, init, read);
   const key = `${init?.method ?? 'GET'} ${path} ${typeof init?.body === 'string' ? init.body : ''}`;
   const existing = inFlightReads.get(key);
   if (existing) return existing as Promise<T>;
@@ -300,10 +308,20 @@ export const api = {
   positionsSnapshot: () => request(TradingSnapshotSchema, '/api/crossex/positions-snapshot', {
     headers: { 'x-gct-read-intent': 'positions-snapshot' },
   }),
-  portfolioSnapshot: () => request(AuthenticatedPortfolioSnapshotSchema, '/api/crossex/portfolio-snapshot', {
+  portfolioSnapshot: (signal?: AbortSignal) => request(AuthenticatedPortfolioSnapshotSchema, '/api/crossex/portfolio-snapshot', {
     headers: { 'x-gct-read-intent': 'portfolio-snapshot' },
+    signal,
   }),
   transferCoins: () => request(CrossExTransferCoinsResponseSchema, '/api/crossex/transfer-coins'),
+  // A quote consumes Gate's daily allowance. Bypass automatic read retries even though
+  // the explicit read-intent header correctly identifies this as a non-executable request.
+  convertQuote: (body: CrossExConvertQuoteRequest, signal?: AbortSignal) => requestOnce(
+    CrossExConvertQuoteResponseSchema, '/api/crossex/convert/quote', {
+      method: 'POST', headers: { 'x-gct-read-intent': 'convert-quote' },
+      body: JSON.stringify(CrossExConvertQuoteRequestSchema.parse(body)),
+      ...(signal ? { signal } : {}),
+    }, false,
+  ),
   transferBalances: () => request(CrossExTransferBalancesResponseSchema, '/api/crossex/transfer-balances', {
     headers: { 'x-gct-read-intent': 'transfer-balances' },
   }),
@@ -382,7 +400,7 @@ export const api = {
   fees: () => request(VenueFeeRatesResponseSchema, '/api/crossex/fees', {
     headers: { 'x-gct-read-intent': 'fee-rates' },
   }),
-  connection: () => request(CredentialConnectionStatusSchema, '/api/onboarding/connection'),
+  connection: (signal?: AbortSignal) => request(CredentialConnectionStatusSchema, '/api/onboarding/connection', signal ? { signal } : undefined),
   switchAccount: (profileId: string, confirmPauseRunningStrategies = false) => request(
     CredentialConnectionStatusSchema,
     `/api/onboarding/accounts/${encodeURIComponent(profileId)}/activate`,

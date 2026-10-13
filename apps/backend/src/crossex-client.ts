@@ -4,6 +4,7 @@ import {
   CrossExVenueSchema,
   CrossExTransferAccountSchema,
   CrossExTransferRequestSchema,
+  CrossExConvertQuoteResponseSchema,
   type CrossExTransferRequest,
 } from '@gate-crossex/shared-types';
 import type { GateCredentials } from './credential-vault.js';
@@ -22,6 +23,7 @@ const LEVERAGE_ENDPOINT = '/crossex/positions/leverage';
 const FEE_ENDPOINT = '/crossex/fee';
 const TRANSFER_COINS_ENDPOINT = '/crossex/transfers/coin';
 const TRANSFERS_ENDPOINT = '/crossex/transfers';
+const CONVERT_QUOTE_ENDPOINT = '/crossex/convert/quote';
 const ACCOUNT_BOOK_ENDPOINT = '/crossex/account_book';
 const SPOT_ACCOUNTS_ENDPOINT = '/spot/accounts';
 const ADL_ENRICHMENT_BUDGET_MS = 1_500;
@@ -254,6 +256,29 @@ const GateAccountBookRecordSchema = z.object({
 });
 export type GateAccountBookRecord = z.infer<typeof GateAccountBookRecordSchema>;
 
+export const GateConvertQuoteRequestSchema = z.object({
+  exchange_type: z.literal('KRAKEN'),
+  from_coin: z.literal('KRAKEN_USD'),
+  to_coin: z.literal('CROSSEX_USDT'),
+  from_amount: z.string().max(40).regex(/^\d+(?:\.\d{1,16})?$/).refine((value) => /[1-9]/.test(value)),
+}).strict();
+export type GateConvertQuoteRequest = z.infer<typeof GateConvertQuoteRequestSchema>;
+
+export const GateConvertQuoteResponseSchema = z.object({
+  quote_id: CrossExConvertQuoteResponseSchema.shape.quoteId,
+  valid_ms: CrossExConvertQuoteResponseSchema.shape.validMs,
+  from_coin: CrossExConvertQuoteResponseSchema.shape.fromCoin,
+  to_coin: CrossExConvertQuoteResponseSchema.shape.toCoin,
+  from_amount: CrossExConvertQuoteResponseSchema.shape.fromAmount,
+  to_amount: CrossExConvertQuoteResponseSchema.shape.toAmount,
+  price: CrossExConvertQuoteResponseSchema.shape.price,
+});
+export type GateConvertQuoteResponse = z.infer<typeof GateConvertQuoteResponseSchema>;
+
+export interface ConvertQuoteCrossExGateway extends Pick<ReadOnlyCrossExGateway, 'queryAccount'> {
+  queryConvertQuote(credentials: GateCredentials, request: GateConvertQuoteRequest, beforeDispatch?: () => void): Promise<GateConvertQuoteResponse>;
+}
+
 export interface TradingCrossExGateway extends ReadOnlyCrossExGateway {
   createOrder(credentials: GateCredentials, order: CrossExOrderRequest): Promise<GateOrderActionResponse>;
   cancelOrder(credentials: GateCredentials, orderId: string): Promise<GateOrderActionResponse>;
@@ -365,7 +390,7 @@ async function readBoundedResponseText(response: Response, maxBytes: number): Pr
   }
 }
 
-export class GateCrossExClient implements TradingCrossExGateway, PortfolioOperationsCrossExGateway {
+export class GateCrossExClient implements TradingCrossExGateway, PortfolioOperationsCrossExGateway, ConvertQuoteCrossExGateway {
   private readonly authenticatedRequestQueue: QueuedAuthenticatedRequest[] = [];
   private authenticatedRequestActive = false;
   private authenticatedRequestSequence = 0;
@@ -502,6 +527,14 @@ export class GateCrossExClient implements TradingCrossExGateway, PortfolioOperat
     );
   }
 
+  async queryConvertQuote(credentials: GateCredentials, request: GateConvertQuoteRequest, beforeDispatch?: () => void): Promise<GateConvertQuoteResponse> {
+    const body = JSON.stringify(GateConvertQuoteRequestSchema.parse(request));
+    return this.signedRequest(
+      'POST', CONVERT_QUOTE_ENDPOINT, '', body, credentials,
+      GateConvertQuoteResponseSchema, 'INVALID_CONVERT_QUOTE_RESPONSE', false, 'normal', 10_000, beforeDispatch,
+    );
+  }
+
   async queryTransfers(
     credentials: GateCredentials,
     query: { coin?: string; limit: number },
@@ -544,10 +577,14 @@ export class GateCrossExClient implements TradingCrossExGateway, PortfolioOperat
     attributeBrokerOrder = false,
     priority: AuthenticatedRequestPriority = 'normal',
     timeoutMs = 10_000,
+    beforeDispatch?: () => void,
   ): Promise<T> {
     const requestPath = `/api/v4${endpoint}`;
 
     const response = await this.scheduleAuthenticatedRequest(async () => {
+      // Only conversion quotes supply this guard. Recheck their account/cancellation
+      // after queue delays, immediately before signing or spending an upstream quote.
+      beforeDispatch?.();
       try {
         // Sign only after this request reaches the front of the queue: a Retry-After cooldown can
         // otherwise leave a timestamp stale before the request is sent.

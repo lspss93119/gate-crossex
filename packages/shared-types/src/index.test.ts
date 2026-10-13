@@ -261,3 +261,27 @@ describe('terminal stream contract', () => {
     }).success).toBe(true);
   });
 });
+import * as shared from './index.js';
+
+describe('USD to USDT quote contracts', () => {
+  it('accepts exact decimal amounts but rejects invalid amounts and arbitrary routes', () => {
+    expect(shared).toHaveProperty('CrossExConvertQuoteRequestSchema');
+    const valid = { profileId: 'gate-crossex-default', fromAmount: '25.0000000000000001' };
+    expect(shared.CrossExConvertQuoteRequestSchema.safeParse(valid).success).toBe(true);
+    for (const invalid of ['0', '-1', '1e3', 'NaN', 'Infinity', '0.00000000000000001']) {
+      expect(shared.CrossExConvertQuoteRequestSchema.safeParse({ ...valid, fromAmount: invalid }).success).toBe(false);
+    }
+    expect(shared.CrossExConvertQuoteRequestSchema.safeParse({ ...valid, profileId: '' }).success).toBe(false);
+    expect(shared.CrossExConvertQuoteRequestSchema.safeParse({ ...valid, toCoin: 'BTC' }).success).toBe(false);
+  });
+
+  it('requires a non-executable, account-bound quote with valid numeric strings', () => {
+    expect(shared).toHaveProperty('CrossExConvertQuoteResponseSchema');
+    const valid = { quoteId: 'quote-1', profileId: 'gate-crossex-default', fromCoin: 'KRAKEN_USD', toCoin: 'CROSSEX_USDT',
+      fromAmount: '25', toAmount: '24.975', price: '0.999', validMs: '5000', quotedAt: '2026-10-12T13:00:00.000Z', executionEnabled: false };
+    expect(shared.CrossExConvertQuoteResponseSchema.safeParse(valid).success).toBe(true);
+    for (const invalid of [{ executionEnabled: true }, { toCoin: 'BTC' }, { toAmount: 'NaN' }, { validMs: '0' }]) {
+      expect(shared.CrossExConvertQuoteResponseSchema.safeParse({ ...valid, ...invalid }).success).toBe(false);
+    }
+  });
+});
